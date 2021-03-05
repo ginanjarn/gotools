@@ -2,7 +2,7 @@
 
 
 import os
-from .sublimetext.core.terminal import execute
+from .terminal import execute
 
 
 class CompletionError(Exception):
