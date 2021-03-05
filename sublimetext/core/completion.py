@@ -1,11 +1,16 @@
 """completion assistant"""
 
 
-from .terminal import execute
+import os
+from .sublimetext.core.terminal import execute
 
 
 class CompletionError(Exception):
     """CompletionError"""
+
+
+sys_envs = os.environ.copy()
+GOPATH = sys_envs.get("GOPATH")
 
 
 def make_completion(messages: str):
@@ -31,6 +36,7 @@ def complete(source: str, offset: int, workdir: str = None) -> "Dict[str, Any]":
         result, ret_code = execute(
             "gocode -f=csv -builtin -unimported-packages autocomplete c%s" % offset,
             stdin=source,
+            workdir=GOPATH,
         )
     except FileNotFoundError as err:
         raise CompletionError from err

@@ -39,6 +39,30 @@ def valid_attribute(view, point):
     )
 
 
+def build_signature(completion: dict) -> str:
+    base_signature = completion["signature"]
+    if completion["type"] == "func":
+        return "".join( [completion["name"]+base_signature[4:]])
+    return base_signature
+
+def extract_arguments(arguments: str) -> "Iterator[str]":
+    found = re.findall(r"\w+\(([\w\s\,\.\{\}]*)\).*", arguments)
+    if any(found):
+        yield from (args for args in found[0].split(","))
+
+def build_func_result(base_name: str, base_signature: str) -> str:
+    signature = ",".join(["${%s:%s}"%val for val in enumerate(extract_arguments(base_signature), start=1)])
+    return "%s(%s)"%(base_name, signature)
+
+
+def build_completion_result(completion: dict) -> str:
+    base_name = completion["name"]
+    base_signature = completion["signature"]
+    if completion["type"] == "func":
+        return build_func_result(base_name, base_signature)
+    return base_name
+
+
 def build_completion(completions):
     """build completion"""
 
@@ -46,9 +70,10 @@ def build_completion(completions):
         # yield (completion["type"], completion["name"],completion["signature"],completion["module"])
         yield (
             "{name}  \t{signature}".format(
-                name=completion["name"], signature=completion["signature"]
+                name=completion["name"], 
+                signature=build_signature(completion)
             ),
-            completion["name"],
+            build_completion_result(completion)
         )
 
 
