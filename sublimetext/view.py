@@ -13,8 +13,8 @@ def show_popup(
     document_view: "sublime.View",
     content: str,
     location: int,
-    on_navigate: "Callable[[str],None]" = None,
-):
+    on_navigate: "Callable[[str], None]" = None,
+) -> None:
     """Open popup"""
 
     document_view.show_popup(
@@ -26,7 +26,7 @@ def show_popup(
     )
 
 
-def show_completions(document_view):
+def show_completions(document_view: sublime.View) -> None:
     """show completion"""
 
     document_view.run_command("hide_auto_complete")
@@ -40,7 +40,7 @@ def show_completions(document_view):
     )
 
 
-def open_link(view, link):
+def open_link(view: sublime.View, link: "Dict[str, Any]") -> None:
     """open link"""
 
     if not link:
