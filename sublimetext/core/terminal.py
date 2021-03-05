@@ -3,18 +3,27 @@
 
 import os
 import subprocess
+import logging
+
+
+logger = logging.getLogger(__name__)
+# logger.setLevel(logging.DEBUG)
+sh = logging.StreamHandler()
+sh.setFormatter(logging.Formatter("%(levelname)s\t%(module)s: %(lineno)d\t%(message)s"))
+sh.setLevel(logging.DEBUG)
+logger.addHandler(sh)
 
 
 def execute(
-    command: str, *, stdin: str = None, workdir: str = None
+    command: "List[str]", *, stdin: str = None, workdir: str = None
 ) -> "Tuple[Any, int]":
     """execute terminal command
 
     Results:
     Tuple => ((stdout, stderr), returncode)"""
 
-    process_cmd = command.split()
     env = os.environ.copy()
+    logger.debug("exec command : %s", command)
 
     if os.name == "nt":
         # linux subprocess module does not have STARTUPINFO
@@ -22,7 +31,7 @@ def execute(
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
         process = subprocess.Popen(
-            process_cmd,
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -33,7 +42,7 @@ def execute(
         )
     else:
         process = subprocess.Popen(
-            process_cmd,
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

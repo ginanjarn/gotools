@@ -5,10 +5,23 @@ import re
 import os
 from html import escape
 from .terminal import execute
+import logging
+
+
+logger = logging.getLogger(__name__)
+# logger.setLevel(logging.DEBUG)
+sh = logging.StreamHandler()
+sh.setFormatter(logging.Formatter("%(levelname)s\t%(module)s: %(lineno)d\t%(message)s"))
+sh.setLevel(logging.DEBUG)
+logger.addHandler(sh)
 
 
 class DocumentationError(Exception):
     """DocumentationError"""
+
+
+sys_envs = os.environ.copy()
+GOPATH = sys_envs.get("GOPATH")
 
 
 def get_definition(source, offset, *, file_name=""):
@@ -18,9 +31,8 @@ def get_definition(source, offset, *, file_name=""):
         => { 'path':'', 'line':0, 'column':0 }"""
 
     try:
-        result, ret_code = execute(
-            "godef -i -o=%s -f=%s" % (offset, file_name), stdin=source, workdir=None
-        )
+        command = ["godef", "-i", "-o=%s" % offset, "-f='%s'" % file_name]
+        result, ret_code = execute(command, stdin=source, workdir=GOPATH)
     except FileNotFoundError as err:
         raise DocumentationError(err)
     else:
@@ -46,7 +58,8 @@ def get_documentation(symbol):
         documentatation string"""
 
     try:
-        result, ret_code = execute("go doc -short %s" % symbol)
+        command = ["go", "doc", "-short", "%s" % symbol]
+        result, ret_code = execute(command, workdir=GOPATH)
     except FileNotFoundError as err:
         raise DocumentationError(err)
     else:
@@ -69,9 +82,9 @@ def build_documentation(
 
     head = '<a href="">Go to definition</a>'
     content = (
-        "<div>{head}<p>{body}</p></div>".format(head=head, body=build_body(message))
+        "{head}<p>{body}</p>".format(head=head, body=build_body(message))
         if message
-        else "<div>{head}</div>".format(head=head)
+        else "{head}".format(head=head)
     )
     return {
         "content": content,
