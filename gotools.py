@@ -300,3 +300,6 @@ class GotoolsValidateCommand(sublime_plugin.TextCommand):
         output_panel = OutputPanel(self.view.window(), "gotools")
         output_panel.append(diagnostic)
         output_panel.show()
+
+    def is_visible(self):
+        return valid_source(self.view)
