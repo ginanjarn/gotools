@@ -318,6 +318,12 @@ class Event(sublime_plugin.ViewEventListener):
         else:
             enable_plugin(False)
 
+    def on_post_save(self):
+        if valid_source(self.view):
+            enable_plugin()
+        else:
+            enable_plugin(False)
+
     def get_documentation(self, view: sublime.View, location: int):
         end = view.word(location).b
         source = view.substr(sublime.Region(0, view.size()))
@@ -369,7 +375,9 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
             l = (len(line) - 2) + 1
 
             if line.startswith("-"):
-                self.diff_sanity_check(view.substr(sublime.Region(i, i + l - 1)), line[2:])
+                self.diff_sanity_check(
+                    view.substr(sublime.Region(i, i + l - 1)), line[2:]
+                )
                 view.erase(edit, sublime.Region(i, i + l))
 
             elif line.startswith("+"):
@@ -377,7 +385,9 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
                 i += l
 
             else:
-                self.diff_sanity_check(view.substr(sublime.Region(i, i + l - 1)), line[2:])
+                self.diff_sanity_check(
+                    view.substr(sublime.Region(i, i + l - 1)), line[2:]
+                )
                 i += l
 
     @staticmethod
