@@ -64,3 +64,17 @@ class OutputPanel:
     def destroy(self):
         """destroy panel"""
         self.window.destroy_output_panel(self.panel_name)
+
+
+class DiagnosticPanel(OutputPanel):
+    """Diagnostic output panel"""
+
+    def __init__(self, window: sublime.Window):
+        super().__init__(window, name="gotools-diagnostic")
+
+
+class ErrorPanel(OutputPanel):
+    """Error output panel"""
+
+    def __init__(self, window: sublime.Window):
+        super().__init__(window, name="gotools-error")

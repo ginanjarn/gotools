@@ -79,6 +79,7 @@ def get_documentation(source: str, workdir: str, location: int):
                 "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
             )
             return None
+
         return sout.decode("utf8")
 
     except OSError as err:
@@ -113,7 +114,8 @@ def get_formatted_code(source: str):
             logger.debug(
                 "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
             )
-            return None
+            raise ValueError("\n".join(serr.decode().splitlines()))
+            # return None
         return sout.decode("utf8")
 
     except OSError as err:
@@ -148,7 +150,7 @@ def get_diagnostic(path: str, workdir: str = ""):
             cwd=workdir,
         )
 
-        sout, serr = process.communicate()
+        _, serr = process.communicate()
         return serr.decode("utf8")
 
     except OSError as err:

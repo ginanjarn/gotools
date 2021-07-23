@@ -23,7 +23,7 @@ from .core.api import (
     get_diagnostic,
 )
 
-from .core.sublime_text import show_completions, show_popup, OutputPanel
+from .core.sublime_text import show_completions, show_popup, DiagnosticPanel, ErrorPanel
 
 
 GocodeResult = namedtuple("GocodeResult", ["type_", "name", "data", "package"])
@@ -235,7 +235,25 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
             return
 
         source = view.substr(sublime.Region(0, view.size()))
-        formatted = get_formatted_code(source)
+
+        try:
+            formatted = get_formatted_code(source)
+
+        except Exception as err:
+            file_name = os.path.basename(view.file_name())
+
+            self.show_error_panel(
+                view.window(), str(err).replace("<standard input>", file_name),
+            )
+
+        else:
+            if not formatted:
+                return
+
+            self.apply_changes(view, edit, source, formatted)
+
+    def apply_changes(self, view, edit, source, formatted):
+        """apply formatting changes"""
 
         i = 0
         for line in difflib.ndiff(source.splitlines(), formatted.splitlines()):
@@ -260,6 +278,14 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
                     view.substr(sublime.Region(i, i + l - 1)), line[2:]
                 )
                 i += l
+
+    @staticmethod
+    def show_error_panel(window: sublime.Window, message: str):
+        """show error in output panel"""
+
+        output_panel = ErrorPanel(window)
+        output_panel.append(message)
+        output_panel.show()
 
     @staticmethod
     def diff_sanity_check(a, b):
@@ -297,7 +323,7 @@ class GotoolsValidateCommand(sublime_plugin.TextCommand):
         diagnostic = get_diagnostic(view.file_name(), workdir=work_dir)
         logger.debug(diagnostic)
 
-        output_panel = OutputPanel(self.view.window(), "gotools")
+        output_panel = DiagnosticPanel(self.view.window())
         output_panel.append(diagnostic)
         output_panel.show()
 
