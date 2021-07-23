@@ -119,6 +119,41 @@ def get_formatted_code(source: str):
         logger.error(err)
 
 
+def get_diagnostic(path: str, workdir: str = ""):
+    """get diagnostic for file or directory"""
+
+    command = ["go", "vet", path]
+    env = os.environ.copy()
+
+    if os.name == "nt":
+        # STARTUPINFO only available on windows
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
+    else:
+        startupinfo = None
+
+    if not workdir:
+        workdir = os.path.dirname(path) if os.path.isfile(path) else path
+
+    try:
+        process = subprocess.Popen(
+            command,
+            # stdin=subprocess.PIPE,
+            # stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            startupinfo=startupinfo,
+            shell=True,
+            env=env,
+            cwd=workdir,
+        )
+
+        sout, serr = process.communicate()
+        return serr.decode("utf8")
+
+    except OSError as err:
+        logger.error(err)
+
+
 GocodeResult = namedtuple("GocodeResult", ["type_", "name", "data", "package"])
 
 
@@ -397,3 +432,64 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
 
     def is_visible(self):
         return valid_source(self.view)
+
+
+class OutputPanel:
+    """Output panel handler"""
+
+    def __init__(self, window: sublime.Window, name: str):
+        self.panel_name = name
+        self.window = window
+
+    def get_panel(self):
+        panel = self.window.create_output_panel(self.panel_name)
+        panel.set_read_only(False)
+        return panel
+
+    def append(self, *args: str):
+        """append message to panel"""
+
+        panel = self.get_panel()
+        panel.run_command(
+            "append", {"characters": "\n".join(args)},
+        )
+
+    def show(self):
+        """show panel"""
+        self.window.run_command("show_panel", {"panel": "output.%s" % self.panel_name})
+
+    def destroy(self):
+        """destroy panel"""
+        self.window.destroy_output_panel(self.panel_name)
+
+
+class GotoolsValidateCommand(sublime_plugin.TextCommand):
+    """document formatter command"""
+
+    def run(self, edit):
+        if not PLUGIN_ENABLED:
+            return
+
+        view = self.view
+
+        if not valid_source(view):
+            return
+
+        thread = threading.Thread(target=self.diagnostic_thread, args=(view,))
+        thread.start()
+
+    def diagnostic_thread(self, view: sublime.View):
+
+        file_name = view.file_name()
+        work_dir = os.path.dirname(file_name)
+
+        for folder in view.window().folders():
+            if file_name.startswith(folder):
+                work_dir = folder
+
+        diagnostic = get_diagnostic(view.file_name(), workdir=work_dir)
+        logger.debug(diagnostic)
+
+        output_panel = OutputPanel(self.view.window(), "gotools")
+        output_panel.append(diagnostic)
+        output_panel.show()
