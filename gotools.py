@@ -8,150 +8,22 @@ sh.setFormatter(logging.Formatter(stream_formatter))
 sh.setLevel(logging.DEBUG)
 logger.addHandler(sh)
 
-import sublime, sublime_plugin
-import subprocess, os, threading
 import difflib
+import os
+import threading
 from collections import namedtuple
 
-
-def get_completion(source: str, workdir: str, location: int):
-
-    command = ["gocode", "-f=csv", "autocomplete", "c%s" % location]
-    env = os.environ.copy()
-
-    if os.name == "nt":
-        # STARTUPINFO only available on windows
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
-    else:
-        startupinfo = None
-
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            startupinfo=startupinfo,
-            shell=True,
-            env=env,
-            cwd=workdir,
-        )
-        sout, serr = process.communicate(source.encode("utf8"))
-        if serr:
-            logger.debug(
-                "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
-            )
-            return None
-        return sout.decode("utf8")
-
-    except OSError as err:
-        logger.error(err)
+import sublime, sublime_plugin
 
 
-def get_documentation(source: str, workdir: str, location: int):
+from .core.api import (
+    get_completion,
+    get_documentation,
+    get_formatted_code,
+    get_diagnostic,
+)
 
-    command = ["gocode", "-f=csv", "autocomplete", "c%s" % location]
-    env = os.environ.copy()
-
-    if os.name == "nt":
-        # STARTUPINFO only available on windows
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
-    else:
-        startupinfo = None
-
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            startupinfo=startupinfo,
-            shell=True,
-            env=env,
-            cwd=workdir,
-        )
-        sout, serr = process.communicate(source.encode("utf8"))
-        if serr:
-            logger.debug(
-                "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
-            )
-            return None
-        return sout.decode("utf8")
-
-    except OSError as err:
-        logger.error(err)
-
-
-def get_formatted_code(source: str):
-
-    command = ["gofmt"]
-    env = os.environ.copy()
-
-    if os.name == "nt":
-        # STARTUPINFO only available on windows
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
-    else:
-        startupinfo = None
-
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            startupinfo=startupinfo,
-            shell=True,
-            env=env,
-            # cwd=workdir,
-        )
-        sout, serr = process.communicate(source.encode("utf8"))
-        if serr:
-            logger.debug(
-                "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
-            )
-            return None
-        return sout.decode("utf8")
-
-    except OSError as err:
-        logger.error(err)
-
-
-def get_diagnostic(path: str, workdir: str = ""):
-    """get diagnostic for file or directory"""
-
-    command = ["go", "vet", path]
-    env = os.environ.copy()
-
-    if os.name == "nt":
-        # STARTUPINFO only available on windows
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
-    else:
-        startupinfo = None
-
-    if not workdir:
-        workdir = os.path.dirname(path) if os.path.isfile(path) else path
-
-    try:
-        process = subprocess.Popen(
-            command,
-            # stdin=subprocess.PIPE,
-            # stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            startupinfo=startupinfo,
-            shell=True,
-            env=env,
-            cwd=workdir,
-        )
-
-        sout, serr = process.communicate()
-        return serr.decode("utf8")
-
-    except OSError as err:
-        logger.error(err)
+from .core.sublime_text import show_completions, show_popup, OutputPanel
 
 
 GocodeResult = namedtuple("GocodeResult", ["type_", "name", "data", "package"])
@@ -265,42 +137,6 @@ def valid_scope(view: sublime.View, location: int) -> bool:
         return False
 
     return True
-
-
-def show_completions(view: sublime.View) -> None:
-    """Opens (forced) the sublime autocomplete window"""
-
-    view.run_command(
-        "auto_complete",
-        {
-            "disable_auto_insert": True,
-            "next_completion_if_showing": False,
-            "auto_complete_commit_on_tab": True,
-        },
-    )
-
-
-def hide_completions(view: sublime.View) -> None:
-    """Opens (forced) the sublime autocomplete window"""
-    view.run_command("hide_auto_complete")
-
-
-def show_popup(
-    view: sublime.View,
-    content,
-    flags=0,
-    location=-1,
-    max_width=1024,
-    max_height=480,
-    on_navigate=None,
-    on_hide=None,
-):
-    if not flags:
-        flags = sublime.HIDE_ON_MOUSE_MOVE_AWAY | sublime.COOPERATE_WITH_AUTO_COMPLETE
-
-    view.show_popup(
-        content, flags, location, max_width, max_height, on_navigate, on_hide
-    )
 
 
 PLUGIN_ENABLED = False
@@ -432,35 +268,6 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
 
     def is_visible(self):
         return valid_source(self.view)
-
-
-class OutputPanel:
-    """Output panel handler"""
-
-    def __init__(self, window: sublime.Window, name: str):
-        self.panel_name = name
-        self.window = window
-
-    def get_panel(self):
-        panel = self.window.create_output_panel(self.panel_name)
-        panel.set_read_only(False)
-        return panel
-
-    def append(self, *args: str):
-        """append message to panel"""
-
-        panel = self.get_panel()
-        panel.run_command(
-            "append", {"characters": "\n".join(args)},
-        )
-
-    def show(self):
-        """show panel"""
-        self.window.run_command("show_panel", {"panel": "output.%s" % self.panel_name})
-
-    def destroy(self):
-        """destroy panel"""
-        self.window.destroy_output_panel(self.panel_name)
 
 
 class GotoolsValidateCommand(sublime_plugin.TextCommand):
