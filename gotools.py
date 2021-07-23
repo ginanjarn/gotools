@@ -10,6 +10,7 @@ logger.addHandler(sh)
 
 import sublime, sublime_plugin
 import subprocess, os, threading
+import difflib
 from collections import namedtuple
 
 
@@ -70,6 +71,41 @@ def get_documentation(source: str, workdir: str, location: int):
             shell=True,
             env=env,
             cwd=workdir,
+        )
+        sout, serr = process.communicate(source.encode("utf8"))
+        if serr:
+            logger.debug(
+                "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
+            )
+            return None
+        return sout.decode("utf8")
+
+    except OSError as err:
+        logger.error(err)
+
+
+def get_formatted_code(source: str):
+
+    command = ["gofmt"]
+    env = os.environ.copy()
+
+    if os.name == "nt":
+        # STARTUPINFO only available on windows
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
+    else:
+        startupinfo = None
+
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            startupinfo=startupinfo,
+            shell=True,
+            env=env,
+            # cwd=workdir,
         )
         sout, serr = process.communicate(source.encode("utf8"))
         if serr:
@@ -307,3 +343,47 @@ class Event(sublime_plugin.ViewEventListener):
                 target=self.get_documentation, args=(self.view, point)
             )
             thread.start()
+
+
+class GotoolsFormatCommand(sublime_plugin.TextCommand):
+    """document formatter command"""
+
+    def run(self, edit):
+        if not PLUGIN_ENABLED:
+            return
+
+        view = self.view
+
+        if not valid_source(view):
+            return
+
+        source = view.substr(sublime.Region(0, view.size()))
+        formatted = get_formatted_code(source)
+
+        i = 0
+        for line in difflib.ndiff(source.splitlines(), formatted.splitlines()):
+
+            if line.startswith("?"):  # skip hint lines
+                continue
+
+            l = (len(line) - 2) + 1
+
+            if line.startswith("-"):
+                self.diff_sanity_check(view.substr(sublime.Region(i, i + l - 1)), line[2:])
+                view.erase(edit, sublime.Region(i, i + l))
+
+            elif line.startswith("+"):
+                view.insert(edit, i, "%s\n" % (line[2:]))
+                i += l
+
+            else:
+                self.diff_sanity_check(view.substr(sublime.Region(i, i + l - 1)), line[2:])
+                i += l
+
+    @staticmethod
+    def diff_sanity_check(a, b):
+        if a != b:
+            raise Exception("diff sanity check mismatch\n-%s\n+%s" % (a, b))
+
+    def is_visible(self):
+        return valid_source(self.view)
