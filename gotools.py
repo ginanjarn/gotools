@@ -11,7 +11,6 @@ logger.addHandler(sh)
 import difflib
 import os
 import threading
-from collections import namedtuple
 
 import sublime, sublime_plugin
 
@@ -26,9 +25,6 @@ from .core.api import (
 from .core.sublime_text import show_completions, show_popup, DiagnosticPanel, ErrorPanel
 
 
-GocodeResult = namedtuple("GocodeResult", ["type_", "name", "data", "package"])
-
-
 class Completion:
     """completion halder"""
 
@@ -38,12 +34,13 @@ class Completion:
     def to_sublime(self):
         return (
             self.completions,
-            sublime.INHIBIT_WORD_COMPLETIONS,
+            sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_EXPLICIT_COMPLETIONS,
         )
 
     @staticmethod
     def transform_type(type_: str):
         type_map = {
+            "keyword": sublime.KIND_KEYWORD,
             "func": sublime.KIND_FUNCTION,
             "package": sublime.KIND_NAMESPACE,
             "type": sublime.KIND_TYPE,
@@ -54,18 +51,14 @@ class Completion:
         return type_map.get(type_, sublime.KIND_AMBIGUOUS)
 
     @classmethod
-    def from_gocode_csv(cls, raw: str):
-        """parse from gocode csv"""
-
-        logger.debug(raw)
+    def from_gocoderesult(cls, gocode_results):
         completions = []
-        for line in raw.splitlines():
-            raw = GocodeResult(*line.split(",,"))
+        for raw in gocode_results:
             annotation = (
                 "%s%s" % (raw.name, raw.data[4:]) if raw.type_ == "func" else raw.data
             )
             details = "<strong>%s%s</strong>" % (
-                "" if raw.type_ == "package" else "%s." % raw.package,
+                "%s." % raw.package if raw.package else "",
                 raw.name,
             )
             completions.append(
@@ -76,7 +69,8 @@ class Completion:
                     details=details,
                 )
             )
-
+        completions.sort(key=lambda c: c.trigger)
+        logger.debug(completions)
         return cls(completions)
 
 
@@ -89,11 +83,12 @@ class Documentation:
         )
 
     @classmethod
-    def from_gocode_csv(cls, raw: str):
-        """parse from gocode csv"""
+    def from_gocoderesult(cls, gocode_results):
 
-        candidates = raw.splitlines()
-        result = GocodeResult(*candidates[0].split(",,"))
+        result = gocode_results
+        if not result:
+            return cls(doc="")
+
         logger.debug(result)
 
         if result.name == "main":
@@ -102,23 +97,27 @@ class Documentation:
         if result.data == "invalid type":
             return cls(doc="")
 
-        doc_template = "<body style='padding: 0.5em;'><strong>{head}</strong><div><p>{body}</p><a href='#'>More</a></div></body>"
+        doc_template = "<div style='padding: 0.5em;'>{body}</div>"
 
         if result.type_ == "package":
             doc = doc_template.format(
-                head=result.name, body="package %s" % (result.name)
+                body="package <strong>%s</strong>" % (result.name)
             )
             return cls(doc, package=result.name)
 
+        package = "%s." % result.package if result.package else ""
+
         if result.type_ == "func":
-            head = "%s.%s" % (result.package, result.name)
-            body = "%s%s" % (result.name, result.data[4:])
-            doc = doc_template.format(head=head, body=body)
+            body = "<i>%s</i><strong>%s</strong>%s" % (
+                package,
+                result.name,
+                result.data[4:],
+            )
+            doc = doc_template.format(body=body)
             return cls(doc, package=result.package, methodOrField=result.name)
 
-        head = "%s.%s" % (result.package, result.name)
-        body = "%s %s %s" % (result.type_, result.name, result.data)
-        doc = doc_template.format(head=head, body=body)
+        body = "<i>%s</i><strong>%s</strong> %s" % (package, result.name, result.data,)
+        doc = doc_template.format(body=body)
         return cls(doc, package=result.package, methodOrField=result.name)
 
 
@@ -161,8 +160,7 @@ class Event(sublime_plugin.ViewEventListener):
         workdir = os.path.dirname(view.file_name())
 
         raw_completions = get_completion(source, workdir, location)
-        completion = Completion.from_gocode_csv(raw_completions)
-
+        completion = Completion.from_gocoderesult(raw_completions)
         self.completions = completion.to_sublime()
 
         show_completions(view)
@@ -203,7 +201,7 @@ class Event(sublime_plugin.ViewEventListener):
         if not candidates:
             return
 
-        doc = Documentation.from_gocode_csv(candidates)
+        doc = Documentation.from_gocoderesult(candidates)
 
         if doc.documentation:
             show_popup(view, content=doc.documentation, location=location)
