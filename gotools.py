@@ -199,7 +199,9 @@ class Event(sublime_plugin.ViewEventListener):
         if matched:
             return True
 
-        matched = re.match(r".*(?:var|const)(?:\s*\w*|(?:\s+\w+)\s+\w+\s*\w*)$", line_str)
+        matched = re.match(
+            r".*(?:var|const)(?:\s*\w*|(?:\s+\w+)\s+\w+\s*\w*)$", line_str
+        )
         if matched:
             return True
 
@@ -269,6 +271,16 @@ class Event(sublime_plugin.ViewEventListener):
             enable_plugin()
         else:
             enable_plugin(False)
+
+    def on_modified(self):
+        if not PLUGIN_ENABLED:
+            return
+
+        view = self.view
+        if view.is_auto_complete_visible():
+            word = view.substr(view.word(view.sel()[0].a)).strip()
+            if not word:
+                view.run_command("hide_auto_complete")
 
     def get_documentation(self, view: sublime.View, location: int):
         end = view.word(location).b
