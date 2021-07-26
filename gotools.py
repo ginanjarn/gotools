@@ -10,6 +10,7 @@ logger.addHandler(sh)
 
 import difflib
 import os
+import re
 import threading
 
 import sublime, sublime_plugin
@@ -154,6 +155,33 @@ class Event(sublime_plugin.ViewEventListener):
         self.view = view
         self.completions = None
 
+    def cancel_completion(self, view: sublime.View, location: int):
+        line_region = view.line(location)
+        line_str = view.substr(sublime.Region(line_region.a, location))
+
+        logger.debug("compare line: %s", line_str)
+
+        matched = re.match(r"(?:package|import).*", line_str)
+        if matched:
+            return True
+
+        matched = re.match(r"(?:var|const)\s+\w*(?:\s+\w+\s+)*$", line_str)
+        if matched:
+            return True
+
+        matched = re.match(r"(?:type)\s*(?:\w*|\w+\s+\w+\s+.*)$", line_str)
+        if matched:
+            return True
+
+        matched = re.match(
+            r"func\s*(?:\w*|\(\s*\w*|\(\s*\w*\s+\w+\)\s*\w*\s*|.*[\(\,]\s*\w*)$",
+            line_str,
+        )
+        if matched:
+            return True
+
+        return False
+
     def completion_thread(self, view: sublime.View):
         source = view.substr(sublime.Region(0, view.size()))
         location = view.sel()[0].a
@@ -171,6 +199,11 @@ class Event(sublime_plugin.ViewEventListener):
 
         if not valid_scope(self.view, locations[0]):
             return ([], sublime.INHIBIT_EXPLICIT_COMPLETIONS)
+
+        if self.cancel_completion(self.view, locations[0]):
+            logger.debug("canceled")
+            self.view.run_command("hide_auto_complete")
+            return
 
         if self.completions:
             completions = self.completions
