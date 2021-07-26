@@ -75,6 +75,40 @@ class Completion:
         return cls(completions)
 
 
+class CompletionContextMatcher:
+    """context matcher"""
+
+    def __init__(self, completions):
+        self.completions = completions
+
+    def _filter_type(self):
+        yield from (
+            completion for completion in self.completions if completion.type_ == "type"
+        )
+
+    def _filter_package(self, name: str):
+        yield from (
+            completion for completion in self.completions if completion.package == name
+        )
+
+    def get_matched(self, line_str: str):
+        logger.debug("to match: %s", line_str)
+        matched = re.match(r"(\w+)(?:\.\w*)$", line_str)
+        if matched:
+            logger.debug(matched.group(1))
+            return list(self._filter_package(name=matched.group(1)))
+
+        matched = re.match(r".*(?:var|const)(?:\s+\w+)(\s*\w*)$", line_str)
+        if matched:
+            return list(self._filter_type())
+
+        matched = re.match(r".*(?:func.*)([\(\,]\s*\w+\s+\w*)$", line_str,)
+        if matched:
+            return list(self._filter_type())
+
+        return self.completions
+
+
 class Documentation:
     def __init__(self, doc: str, *, package: str = "", methodOrField: str = ""):
         self.documentation = doc
@@ -188,6 +222,13 @@ class Event(sublime_plugin.ViewEventListener):
         workdir = os.path.dirname(view.file_name())
 
         raw_completions = get_completion(source, workdir, location)
+
+        line_region = view.line(location)
+        line_str = view.substr(sublime.Region(line_region.a, location))
+        cm = CompletionContextMatcher(raw_completions)
+
+        raw_completions = cm.get_matched(line_str)
+
         completion = Completion.from_gocoderesult(raw_completions)
         self.completions = completion.to_sublime()
 
@@ -210,8 +251,11 @@ class Event(sublime_plugin.ViewEventListener):
             self.completions = None
             return completions
 
+        logger.debug("prefix = '%s'", prefix)
+
         thread = threading.Thread(target=self.completion_thread, args=(self.view,))
         thread.start()
+        self.view.run_command("hide_auto_complete")
         return None
 
     def on_activated(self):
