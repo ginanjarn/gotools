@@ -161,20 +161,20 @@ class Event(sublime_plugin.ViewEventListener):
 
         logger.debug("compare line: %s", line_str)
 
-        matched = re.match(r"(?:package|import).*", line_str)
+        matched = re.match(r".*(?:package|import).*", line_str)
         if matched:
             return True
 
-        matched = re.match(r"(?:var|const)\s+\w*(?:\s+\w+\s+)*$", line_str)
+        matched = re.match(r".*(?:var|const)(?:\s*\w*|(?:\s+\w+)\s+\w+\s*\w*)$", line_str)
         if matched:
             return True
 
-        matched = re.match(r"(?:type)\s*(?:\w*|\w+\s+\w+\s+.*)$", line_str)
+        matched = re.match(r".*(?:type)(?:\s*\w*|(?:\s+\w+\s+\w+)\s*)$", line_str)
         if matched:
             return True
 
         matched = re.match(
-            r"func\s*(?:\w*|\(\s*\w*|\(\s*\w*\s+\w+\)\s*\w*\s*|.*[\(\,]\s*\w*)$",
+            r".*(?:func\s*)(?:\w*|\(\s*\w*|\(\s*\w*\s+\w+\)\s*\w*\s*|.*[\(\,]\s*\w*)$",
             line_str,
         )
         if matched:
