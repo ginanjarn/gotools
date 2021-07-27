@@ -158,7 +158,9 @@ class Gocode:
             self.builtin_results,
         )
 
-        if re.match(r"(?:.*func.*)([\(\,]\s*\w+\s+\w*)?(\)(?:\s*\w*\s*\,*)*)$", last_line,):
+        if re.match(
+            r"(?:.*func.*)([\(\,]\s*\w+\s+\w*)?(\)(?:\s*\w*\s*\,*)*)$", last_line,
+        ):
             for completion in candidates:
                 if completion.type_ == "type":
                     yield completion
@@ -176,6 +178,10 @@ class Gocode:
         )
 
         *_, last_line = self.source[:offset].splitlines()
+
+        match = re.match(r"func\s+(\w+)\.*$", last_line,)
+        if match:
+            return None
 
         match = re.match(
             r".*[\/\\\(\)\"\'\-\:\,\.\;\<\>\~\!\@\#\$\%\^\&\*\|\+\=\[\]\{\}\`\~\?](\w+)$",
