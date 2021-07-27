@@ -8,170 +8,46 @@ sh.setFormatter(logging.Formatter(stream_formatter))
 sh.setLevel(logging.DEBUG)
 logger.addHandler(sh)
 
-import sublime, sublime_plugin
-import subprocess, os, threading
 import difflib
-from collections import namedtuple
+import os
+import re
+import threading
+
+import sublime, sublime_plugin
 
 
-def get_completion(source: str, workdir: str, location: int):
+from .core.api import (
+    get_completion,
+    get_documentation,
+    get_formatted_code,
+    get_diagnostic,
+)
 
-    command = ["gocode", "-f=csv", "autocomplete", "c%s" % location]
-    env = os.environ.copy()
-
-    if os.name == "nt":
-        # STARTUPINFO only available on windows
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
-    else:
-        startupinfo = None
-
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            startupinfo=startupinfo,
-            shell=True,
-            env=env,
-            cwd=workdir,
-        )
-        sout, serr = process.communicate(source.encode("utf8"))
-        if serr:
-            logger.debug(
-                "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
-            )
-            return None
-        return sout.decode("utf8")
-
-    except OSError as err:
-        logger.error(err)
-
-
-def get_documentation(source: str, workdir: str, location: int):
-
-    command = ["gocode", "-f=csv", "autocomplete", "c%s" % location]
-    env = os.environ.copy()
-
-    if os.name == "nt":
-        # STARTUPINFO only available on windows
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
-    else:
-        startupinfo = None
-
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            startupinfo=startupinfo,
-            shell=True,
-            env=env,
-            cwd=workdir,
-        )
-        sout, serr = process.communicate(source.encode("utf8"))
-        if serr:
-            logger.debug(
-                "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
-            )
-            return None
-        return sout.decode("utf8")
-
-    except OSError as err:
-        logger.error(err)
-
-
-def get_formatted_code(source: str):
-
-    command = ["gofmt"]
-    env = os.environ.copy()
-
-    if os.name == "nt":
-        # STARTUPINFO only available on windows
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
-    else:
-        startupinfo = None
-
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            startupinfo=startupinfo,
-            shell=True,
-            env=env,
-            # cwd=workdir,
-        )
-        sout, serr = process.communicate(source.encode("utf8"))
-        if serr:
-            logger.debug(
-                "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
-            )
-            return None
-        return sout.decode("utf8")
-
-    except OSError as err:
-        logger.error(err)
-
-
-def get_diagnostic(path: str, workdir: str = ""):
-    """get diagnostic for file or directory"""
-
-    command = ["go", "vet", path]
-    env = os.environ.copy()
-
-    if os.name == "nt":
-        # STARTUPINFO only available on windows
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
-    else:
-        startupinfo = None
-
-    if not workdir:
-        workdir = os.path.dirname(path) if os.path.isfile(path) else path
-
-    try:
-        process = subprocess.Popen(
-            command,
-            # stdin=subprocess.PIPE,
-            # stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            startupinfo=startupinfo,
-            shell=True,
-            env=env,
-            cwd=workdir,
-        )
-
-        sout, serr = process.communicate()
-        return serr.decode("utf8")
-
-    except OSError as err:
-        logger.error(err)
-
-
-GocodeResult = namedtuple("GocodeResult", ["type_", "name", "data", "package"])
+from .core.sublime_text import (
+    show_completions,
+    hide_completions,
+    show_popup,
+    DiagnosticPanel,
+    ErrorPanel,
+)
 
 
 class Completion:
     """completion halder"""
 
     def __init__(self, completions):
-        self.completions = completions
+        self.completions = tuple(completions)
 
     def to_sublime(self):
         return (
             self.completions,
-            sublime.INHIBIT_WORD_COMPLETIONS,
+            sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_EXPLICIT_COMPLETIONS,
         )
 
     @staticmethod
     def transform_type(type_: str):
         type_map = {
+            "keyword": sublime.KIND_KEYWORD,
             "func": sublime.KIND_FUNCTION,
             "package": sublime.KIND_NAMESPACE,
             "type": sublime.KIND_TYPE,
@@ -182,18 +58,14 @@ class Completion:
         return type_map.get(type_, sublime.KIND_AMBIGUOUS)
 
     @classmethod
-    def from_gocode_csv(cls, raw: str):
-        """parse from gocode csv"""
-
-        logger.debug(raw)
+    def from_gocoderesult(cls, gocode_results):
         completions = []
-        for line in raw.splitlines():
-            raw = GocodeResult(*line.split(",,"))
+        for raw in gocode_results:
             annotation = (
                 "%s%s" % (raw.name, raw.data[4:]) if raw.type_ == "func" else raw.data
             )
             details = "<strong>%s%s</strong>" % (
-                "" if raw.type_ == "package" else "%s." % raw.package,
+                "%s." % raw.package if raw.package else "",
                 raw.name,
             )
             completions.append(
@@ -204,8 +76,35 @@ class Completion:
                     details=details,
                 )
             )
-
+        completions.sort(key=lambda c: c.trigger)
+        logger.debug(completions)
         return cls(completions)
+
+
+class CompletionContextMatcher:
+    """context matcher"""
+
+    def __init__(self, completions):
+        self.completions = completions
+
+    def _filter_type(self):
+        yield from (
+            completion for completion in self.completions if completion.type_ == "type"
+        )
+
+    def _filter_package(self, name: str):
+        yield from (
+            completion for completion in self.completions if completion.package == name
+        )
+
+    def get_matched(self, line_str: str):
+        logger.debug("to match: %s", line_str)
+
+        matched = re.match(r".*(?:var|const)(?:\s+\w+)(\s*\w*)$", line_str)
+        if matched:
+            return tuple(self._filter_type())
+
+        return self.completions
 
 
 class Documentation:
@@ -217,11 +116,12 @@ class Documentation:
         )
 
     @classmethod
-    def from_gocode_csv(cls, raw: str):
-        """parse from gocode csv"""
+    def from_gocoderesult(cls, gocode_results):
 
-        candidates = raw.splitlines()
-        result = GocodeResult(*candidates[0].split(",,"))
+        result = gocode_results
+        if not result:
+            return cls(doc="")
+
         logger.debug(result)
 
         if result.name == "main":
@@ -230,23 +130,27 @@ class Documentation:
         if result.data == "invalid type":
             return cls(doc="")
 
-        doc_template = "<body style='padding: 0.5em;'><strong>{head}</strong><div><p>{body}</p><a href='#'>More</a></div></body>"
+        doc_template = "<div style='padding: 0.5em;'>{body}</div>"
 
         if result.type_ == "package":
             doc = doc_template.format(
-                head=result.name, body="package %s" % (result.name)
+                body="package <strong>%s</strong>" % (result.name)
             )
             return cls(doc, package=result.name)
 
+        package = "%s." % result.package if result.package else ""
+
         if result.type_ == "func":
-            head = "%s.%s" % (result.package, result.name)
-            body = "%s%s" % (result.name, result.data[4:])
-            doc = doc_template.format(head=head, body=body)
+            body = "<i>%s</i><strong>%s</strong>%s" % (
+                package,
+                result.name,
+                result.data[4:],
+            )
+            doc = doc_template.format(body=body)
             return cls(doc, package=result.package, methodOrField=result.name)
 
-        head = "%s.%s" % (result.package, result.name)
-        body = "%s %s %s" % (result.type_, result.name, result.data)
-        doc = doc_template.format(head=head, body=body)
+        body = "<i>%s</i><strong>%s</strong> %s" % (package, result.name, result.data,)
+        doc = doc_template.format(body=body)
         return cls(doc, package=result.package, methodOrField=result.name)
 
 
@@ -267,42 +171,6 @@ def valid_scope(view: sublime.View, location: int) -> bool:
     return True
 
 
-def show_completions(view: sublime.View) -> None:
-    """Opens (forced) the sublime autocomplete window"""
-
-    view.run_command(
-        "auto_complete",
-        {
-            "disable_auto_insert": True,
-            "next_completion_if_showing": False,
-            "auto_complete_commit_on_tab": True,
-        },
-    )
-
-
-def hide_completions(view: sublime.View) -> None:
-    """Opens (forced) the sublime autocomplete window"""
-    view.run_command("hide_auto_complete")
-
-
-def show_popup(
-    view: sublime.View,
-    content,
-    flags=0,
-    location=-1,
-    max_width=1024,
-    max_height=480,
-    on_navigate=None,
-    on_hide=None,
-):
-    if not flags:
-        flags = sublime.HIDE_ON_MOUSE_MOVE_AWAY | sublime.COOPERATE_WITH_AUTO_COMPLETE
-
-    view.show_popup(
-        content, flags, location, max_width, max_height, on_navigate, on_hide
-    )
-
-
 PLUGIN_ENABLED = False
 
 
@@ -312,6 +180,17 @@ def enable_plugin(enable=True):
     PLUGIN_ENABLED = enable
 
 
+def plugin_loaded():
+    settings_basename = "Go.sublime-settings"
+    sublime_settings = sublime.load_settings(settings_basename)
+    sublime_settings.set("index_files", False)
+    sublime_settings.set("auto_complete_use_index", False)
+    sublime_settings.set("show_definitions", False)
+    sublime.save_settings(settings_basename)
+
+    enable_plugin()
+
+
 class Event(sublime_plugin.ViewEventListener):
     """Event handler"""
 
@@ -319,14 +198,46 @@ class Event(sublime_plugin.ViewEventListener):
         self.view = view
         self.completions = None
 
+    def cancel_completion(self, view: sublime.View, location: int):
+        line_region = view.line(location)
+        line_str = view.substr(sublime.Region(line_region.a, location))
+
+        logger.debug("compare line: %s", line_str)
+
+        matched = re.match(r".*(?:package|import).*", line_str)
+        if matched:
+            return True
+
+        matched = re.match(
+            r".*(?:var|const)(?:\s*\w*|(?:\s+\w+)\s+\w+\s*\w*)$", line_str
+        )
+        if matched:
+            return True
+
+        matched = re.match(r".*(?:type)(?:\s*\w*|(?:\s+\w+\s+\w+)\s*)$", line_str)
+        if matched:
+            return True
+
+        matched = re.match(r".*(?:func\s*)(?:\w*|\(\s*\w*|\(.*\)\s*\w*\s*)$", line_str,)
+        if matched:
+            return True
+
+        return False
+
     def completion_thread(self, view: sublime.View):
         source = view.substr(sublime.Region(0, view.size()))
         location = view.sel()[0].a
         workdir = os.path.dirname(view.file_name())
 
         raw_completions = get_completion(source, workdir, location)
-        completion = Completion.from_gocode_csv(raw_completions)
 
+        line_region = view.line(location)
+        line_str = view.substr(sublime.Region(line_region.a, location))
+        cm = CompletionContextMatcher(raw_completions)
+
+        raw_completions = cm.get_matched(line_str)
+
+        completion = Completion.from_gocoderesult(raw_completions)
         self.completions = completion.to_sublime()
 
         show_completions(view)
@@ -335,16 +246,27 @@ class Event(sublime_plugin.ViewEventListener):
         if not PLUGIN_ENABLED:
             return None
 
+        if not valid_source(self.view):
+            return None
+
         if not valid_scope(self.view, locations[0]):
-            return ([], sublime.INHIBIT_EXPLICIT_COMPLETIONS)
+            return ((), sublime.INHIBIT_EXPLICIT_COMPLETIONS)
+
+        if self.cancel_completion(self.view, locations[0]):
+            logger.debug("canceled")
+            hide_completions(self.view)
+            return None
 
         if self.completions:
             completions = self.completions
             self.completions = None
             return completions
 
+        logger.debug("prefix = '%s'", prefix)
+
         thread = threading.Thread(target=self.completion_thread, args=(self.view,))
         thread.start()
+        hide_completions(self.view)
         return None
 
     def on_activated(self):
@@ -359,6 +281,16 @@ class Event(sublime_plugin.ViewEventListener):
         else:
             enable_plugin(False)
 
+    def on_modified(self):
+        if not PLUGIN_ENABLED:
+            return
+
+        view = self.view
+        if view.is_auto_complete_visible():
+            word = view.substr(view.word(view.sel()[0].a)).strip()
+            if not str.isidentifier(word):
+                view.run_command("hide_auto_complete")
+
     def get_documentation(self, view: sublime.View, location: int):
         end = view.word(location).b
         source = view.substr(sublime.Region(0, view.size()))
@@ -367,7 +299,7 @@ class Event(sublime_plugin.ViewEventListener):
         if not candidates:
             return
 
-        doc = Documentation.from_gocode_csv(candidates)
+        doc = Documentation.from_gocoderesult(candidates)
 
         if doc.documentation:
             show_popup(view, content=doc.documentation, location=location)
@@ -399,7 +331,28 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
             return
 
         source = view.substr(sublime.Region(0, view.size()))
-        formatted = get_formatted_code(source)
+
+        try:
+            formatted = get_formatted_code(source)
+
+        except Exception as err:
+            file_name = os.path.basename(view.file_name())
+
+            self.show_error_panel(
+                view.window(), str(err).replace("<standard input>", file_name),
+            )
+
+        else:
+            output_panel = ErrorPanel(view.window())
+            output_panel.destroy()
+
+            if not formatted:
+                return
+
+            self.apply_changes(view, edit, source, formatted)
+
+    def apply_changes(self, view, edit, source, formatted):
+        """apply formatting changes"""
 
         i = 0
         for line in difflib.ndiff(source.splitlines(), formatted.splitlines()):
@@ -426,41 +379,20 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
                 i += l
 
     @staticmethod
+    def show_error_panel(window: sublime.Window, message: str):
+        """show error in output panel"""
+
+        output_panel = ErrorPanel(window)
+        output_panel.append(message)
+        output_panel.show()
+
+    @staticmethod
     def diff_sanity_check(a, b):
         if a != b:
             raise Exception("diff sanity check mismatch\n-%s\n+%s" % (a, b))
 
     def is_visible(self):
         return valid_source(self.view)
-
-
-class OutputPanel:
-    """Output panel handler"""
-
-    def __init__(self, window: sublime.Window, name: str):
-        self.panel_name = name
-        self.window = window
-
-    def get_panel(self):
-        panel = self.window.create_output_panel(self.panel_name)
-        panel.set_read_only(False)
-        return panel
-
-    def append(self, *args: str):
-        """append message to panel"""
-
-        panel = self.get_panel()
-        panel.run_command(
-            "append", {"characters": "\n".join(args)},
-        )
-
-    def show(self):
-        """show panel"""
-        self.window.run_command("show_panel", {"panel": "output.%s" % self.panel_name})
-
-    def destroy(self):
-        """destroy panel"""
-        self.window.destroy_output_panel(self.panel_name)
 
 
 class GotoolsValidateCommand(sublime_plugin.TextCommand):
@@ -490,6 +422,9 @@ class GotoolsValidateCommand(sublime_plugin.TextCommand):
         diagnostic = get_diagnostic(view.file_name(), workdir=work_dir)
         logger.debug(diagnostic)
 
-        output_panel = OutputPanel(self.view.window(), "gotools")
+        output_panel = DiagnosticPanel(self.view.window())
         output_panel.append(diagnostic)
         output_panel.show()
+
+    def is_visible(self):
+        return valid_source(self.view)
