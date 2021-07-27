@@ -188,6 +188,17 @@ def enable_plugin(enable=True):
     PLUGIN_ENABLED = enable
 
 
+def plugin_loaded():
+    settings_basename = "Go.sublime-settings"
+    sublime_settings = sublime.load_settings(settings_basename)
+    sublime_settings.set("index_files", False)
+    sublime_settings.set("auto_complete_use_index", False)
+    sublime_settings.set("show_definitions", False)
+    sublime.save_settings(settings_basename)
+
+    enable_plugin()
+
+
 class Event(sublime_plugin.ViewEventListener):
     """Event handler"""
 
