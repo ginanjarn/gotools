@@ -99,16 +99,8 @@ class CompletionContextMatcher:
 
     def get_matched(self, line_str: str):
         logger.debug("to match: %s", line_str)
-        matched = re.match(r"(\w+)(?:\.\w*)$", line_str)
-        if matched:
-            logger.debug(matched.group(1))
-            return tuple(self._filter_package(name=matched.group(1)))
 
         matched = re.match(r".*(?:var|const)(?:\s+\w+)(\s*\w*)$", line_str)
-        if matched:
-            return tuple(self._filter_type())
-
-        matched = re.match(r".*(?:func.*)([\(\,]\s*\w+\s+\w*)$", line_str,)
         if matched:
             return tuple(self._filter_type())
 
@@ -226,10 +218,7 @@ class Event(sublime_plugin.ViewEventListener):
         if matched:
             return True
 
-        matched = re.match(
-            r".*(?:func\s*)(?:\w*|\(\s*\w*|\(\s*\w*\s+\w+\)\s*\w*\s*|.*[\(\,]\s*\w*)$",
-            line_str,
-        )
+        matched = re.match(r".*(?:func\s*)(?:\w*|\(\s*\w*|\(.*\)\s*\w*\s*)$", line_str,)
         if matched:
             return True
 
@@ -299,7 +288,7 @@ class Event(sublime_plugin.ViewEventListener):
         view = self.view
         if view.is_auto_complete_visible():
             word = view.substr(view.word(view.sel()[0].a)).strip()
-            if not word:
+            if not str.isidentifier(word):
                 view.run_command("hide_auto_complete")
 
     def get_documentation(self, view: sublime.View, location: int):

@@ -144,8 +144,9 @@ class Gocode:
         self.workdir = workdir
 
     def complete(self, offset: int):
+        *_, last_line = self.source[:offset].splitlines()
 
-        if self.source[:offset].endswith("."):
+        if re.match(r"(?:.*)(\w+)(?:\.\w*)$", last_line):
             yield from self.gocode_exec(
                 self.source, workdir=self.workdir, location=offset
             )
@@ -156,6 +157,13 @@ class Gocode:
             self.keywords,
             self.builtin_results,
         )
+
+        if re.match(r"(?:.*func.*)([\(\,]\s*\w+\s+\w*)?(\)(?:\s*\w*\s*\,*)*)$", last_line,):
+            for completion in candidates:
+                if completion.type_ == "type":
+                    yield completion
+
+            return
 
         yield from candidates
 
