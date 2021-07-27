@@ -23,14 +23,20 @@ from .core.api import (
     get_diagnostic,
 )
 
-from .core.sublime_text import show_completions, show_popup, DiagnosticPanel, ErrorPanel
+from .core.sublime_text import (
+    show_completions,
+    hide_completions,
+    show_popup,
+    DiagnosticPanel,
+    ErrorPanel,
+)
 
 
 class Completion:
     """completion halder"""
 
     def __init__(self, completions):
-        self.completions = completions
+        self.completions = tuple(completions)
 
     def to_sublime(self):
         return (
@@ -96,15 +102,15 @@ class CompletionContextMatcher:
         matched = re.match(r"(\w+)(?:\.\w*)$", line_str)
         if matched:
             logger.debug(matched.group(1))
-            return list(self._filter_package(name=matched.group(1)))
+            return tuple(self._filter_package(name=matched.group(1)))
 
         matched = re.match(r".*(?:var|const)(?:\s+\w+)(\s*\w*)$", line_str)
         if matched:
-            return list(self._filter_type())
+            return tuple(self._filter_type())
 
         matched = re.match(r".*(?:func.*)([\(\,]\s*\w+\s+\w*)$", line_str,)
         if matched:
-            return list(self._filter_type())
+            return tuple(self._filter_type())
 
         return self.completions
 
@@ -240,13 +246,16 @@ class Event(sublime_plugin.ViewEventListener):
         if not PLUGIN_ENABLED:
             return None
 
+        if not valid_source(self.view):
+            return None
+
         if not valid_scope(self.view, locations[0]):
-            return ([], sublime.INHIBIT_EXPLICIT_COMPLETIONS)
+            return ((), sublime.INHIBIT_EXPLICIT_COMPLETIONS)
 
         if self.cancel_completion(self.view, locations[0]):
             logger.debug("canceled")
-            self.view.run_command("hide_auto_complete")
-            return
+            hide_completions(self.view)
+            return None
 
         if self.completions:
             completions = self.completions
@@ -257,7 +266,7 @@ class Event(sublime_plugin.ViewEventListener):
 
         thread = threading.Thread(target=self.completion_thread, args=(self.view,))
         thread.start()
-        self.view.run_command("hide_auto_complete")
+        hide_completions(self.view)
         return None
 
     def on_activated(self):
