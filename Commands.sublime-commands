@@ -1,0 +1,4 @@
+[
+	{ "caption": "GoTools: Format document", "command": "gotools_format" },
+	{ "caption": "GoTools: Validate document", "command": "gotools_validate" },
+]
