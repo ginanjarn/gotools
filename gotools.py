@@ -343,6 +343,9 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
             )
 
         else:
+            output_panel = ErrorPanel(view.window())
+            output_panel.destroy()
+
             if not formatted:
                 return
 
