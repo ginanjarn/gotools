@@ -2,6 +2,7 @@
 
 
 from collections import namedtuple
+from html import escape
 import itertools
 import logging
 import os
@@ -52,7 +53,7 @@ class Gocode:
             sout, serr = process.communicate(source.encode("utf8"))
             if serr:
                 logger.debug(
-                    "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
+                    "gocode error:\n%s" % ("\n".join(serr.decode().splitlines()))
                 )
                 return
 
@@ -199,6 +200,112 @@ class Gocode:
                 return candidate
 
 
+class Documentation:
+    def __init__(self, doc: str, *, package: str = "", methodOrField: str = ""):
+        self.documentation = doc
+        self.pkg_methodOrField = "%s%s" % (
+            package,
+            "" if not methodOrField else "%s" % methodOrField,
+        )
+
+    def to_html(self):
+        if not self.documentation:
+            return ""
+
+        return "<div style='padding: 0.5em;'>{doc}<br><a href='{link}'>More...</a></div>".format(
+            doc=self.documentation, link=self.pkg_methodOrField,
+        )
+
+    @classmethod
+    def from_gocoderesult(cls, gocode_result):
+
+        logger.debug(gocode_result)
+        if not gocode_result:
+            return cls(doc="")
+
+        if (gocode_result.name == "main") or (gocode_result.data == "invalid type"):
+            return cls(doc="")
+
+        if gocode_result.type_ == "package":
+            doc = "package <strong>%s</strong>" % (gocode_result.name)
+            return cls(doc, package=gocode_result.name)
+
+        package = "%s." % gocode_result.package if gocode_result.package else ""
+
+        if gocode_result.type_ == "func":
+            doc = "<i>%s</i><strong>%s</strong>%s" % (
+                package,
+                gocode_result.name,
+                gocode_result.data[4:],
+            )
+            return cls(doc, package=package, methodOrField=gocode_result.name)
+
+        doc = "<i>%s</i><strong>%s</strong> %s" % (
+            package,
+            gocode_result.name,
+            gocode_result.data,
+        )
+        return cls(doc, package=package, methodOrField=gocode_result.name)
+
+
+class Godoc:
+    """get documentation from godoc"""
+
+    @staticmethod
+    def get_godoc(methodOrField: str, workdir: str):
+
+        command = ["go", "doc", methodOrField]
+        env = os.environ.copy()
+
+        if os.name == "nt":
+            # STARTUPINFO only available on windows
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
+        else:
+            startupinfo = None
+
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                startupinfo=startupinfo,
+                shell=True,
+                env=env,
+                cwd=workdir,
+            )
+            sout, serr = process.communicate()
+            if serr:
+                logger.debug(
+                    "go doc error:\n%s" % ("\n".join(serr.decode().splitlines()))
+                )
+                return ""
+
+            return sout.decode("utf8")
+
+        except OSError as err:
+            logger.error(err)
+
+    def __init__(self, methodOrField: str, workdir: str):
+        self.documentation = self.get_godoc(methodOrField, workdir)
+
+    def to_html(self):
+        if not self.documentation:
+            return ""
+
+        logger.debug(repr(self.documentation))
+
+        lines = self.documentation
+        lines = escape(lines)
+        lines = lines.expandtabs(4)
+        lines = lines.replace("   ", "&nbsp;&nbsp;&nbsp;")
+        lines = lines.replace("  ", "&nbsp;&nbsp;")
+        lines = "".join(("<p>%s</p>" % line for line in lines.split("\n\n")))
+        lines = "<br>".join(lines.splitlines())
+        return "<div style='padding: 0.5em;'>%s</div>" % lines
+
+
 def get_completion(source: str, workdir: str, location: int):
     gocode = Gocode(source, workdir)
     yield from gocode.complete(location)
@@ -206,7 +313,12 @@ def get_completion(source: str, workdir: str, location: int):
 
 def get_documentation(source: str, workdir: str, location: int):
     gocode = Gocode(source, workdir)
-    return gocode.get_documentation(location)
+    return Documentation.from_gocoderesult(gocode.get_documentation(location)).to_html()
+
+
+def get_godoc_documentation(methodOrField: str, workdir: str):
+    godoc = Godoc(methodOrField, workdir)
+    return godoc.to_html()
 
 
 def get_formatted_code(source: str):
