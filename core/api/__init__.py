@@ -294,16 +294,14 @@ class Godoc:
         if not self.documentation:
             return ""
 
-        logger.debug(repr(self.documentation))
-
-        lines = self.documentation
-        lines = escape(lines)
-        lines = lines.expandtabs(4)
-        lines = lines.replace("   ", "&nbsp;&nbsp;&nbsp;")
-        lines = lines.replace("  ", "&nbsp;&nbsp;")
-        lines = "".join(("<p>%s</p>" % line for line in lines.split("\n\n")))
-        lines = "<br>".join(lines.splitlines())
-        return "<div style='padding: 0.5em;'>%s</div>" % lines
+        html_escaped = escape(self.documentation)
+        tab_expanded = html_escaped.expandtabs(4)
+        space_replaced = tab_expanded.replace(" ", "&nbsp;")  # non-breakable space
+        paragraph_wrapped = "".join(
+            ("<p>%s</p>" % lines for lines in space_replaced.split("\n\n"))
+        )
+        break_lines = "<br>".join(paragraph_wrapped.splitlines())
+        return "<div style='padding: 0.5em;'>%s</div>" % break_lines
 
 
 def get_completion(source: str, workdir: str, location: int):
