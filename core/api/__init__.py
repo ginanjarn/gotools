@@ -212,7 +212,7 @@ class Documentation:
         if not self.documentation:
             return ""
 
-        return "<div style='padding: 0.5em;'>{doc}<br><a href='{link}'>More...</a></div>".format(
+        return "<div style='border: 0.5em;display: block'>{doc}<br><a href='{link}'>More...</a></div>".format(
             doc=self.documentation, link=self.pkg_methodOrField,
         )
 
@@ -301,7 +301,7 @@ class Godoc:
             ("<p>%s</p>" % lines for lines in space_replaced.split("\n\n"))
         )
         break_lines = "<br>".join(paragraph_wrapped.splitlines())
-        return "<div style='padding: 0.5em;'>%s</div>" % break_lines
+        return "<div style='border: 0.5em;display: block'>%s</div>" % break_lines
 
 
 def get_completion(source: str, workdir: str, location: int):
