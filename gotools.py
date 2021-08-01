@@ -181,14 +181,14 @@ class Event(sublime_plugin.ViewEventListener):
     def completion_thread(self, view: sublime.View):
         source = view.substr(sublime.Region(0, view.size()))
         location = view.sel()[0].a
-        workdir = os.path.dirname(view.file_name())
+        file_path = view.file_name()
 
-        raw_completions = get_completion(source, workdir, location)
+        raw_completions = get_completion(source, file_path, location)
 
         line_region = view.line(location)
         line_str = view.substr(sublime.Region(line_region.a, location))
-        cm = CompletionContextMatcher(raw_completions)
 
+        cm = CompletionContextMatcher(raw_completions)
         raw_completions = cm.get_matched(line_str)
 
         completion = Completion.from_gocoderesult(raw_completions)
@@ -266,9 +266,9 @@ class Event(sublime_plugin.ViewEventListener):
     def get_documentation(self, view: sublime.View, location: int):
         end = view.word(location).b
         source = view.substr(sublime.Region(0, view.size()))
-        workdir = os.path.dirname(view.file_name())
-
-        documentation = get_documentation(source, workdir, end)
+        file_path = view.file_name()
+        
+        documentation = get_documentation(source, file_path, end)
         self.popup_location = location
         self.popup_content = documentation
 

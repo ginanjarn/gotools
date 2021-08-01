@@ -27,10 +27,11 @@ class Gocode:
         for line in raw.splitlines():
             yield GocodeResult(*line.split(",,"))
 
-    def gocode_exec(self, source: str, workdir: str, location: int):
+    def gocode_exec(self, source: str, file_path: str, location: int):
 
-        command = ["gocode", "-f=csv", "autocomplete", "c%s" % location]
+        command = ["gocode", "-f=csv", "autocomplete", file_path, "c%s" % location]
         env = os.environ.copy()
+        workdir = os.path.dirname(file_path)
 
         if os.name == "nt":
             # STARTUPINFO only available on windows
@@ -140,21 +141,21 @@ class Gocode:
         GocodeResult("type", "uintptr", "", "builtin"),
     )
 
-    def __init__(self, source: str, workdir: str):
+    def __init__(self, source: str, file_path: str):
         self.source = source
-        self.workdir = workdir
+        self.file_path = file_path
 
     def complete(self, offset: int):
         *_, last_line = self.source[:offset].splitlines()
 
         if re.match(r"(?:.*)(\w+)(?:\.\w*)$", last_line):
             yield from self.gocode_exec(
-                self.source, workdir=self.workdir, location=offset
+                self.source, file_path=self.file_path, location=offset,
             )
             return
 
         candidates = itertools.chain(
-            self.gocode_exec(self.source, workdir=self.workdir, location=offset),
+            self.gocode_exec(self.source, file_path=self.file_path, location=offset),
             self.keywords,
             self.builtin_results,
         )
@@ -173,7 +174,7 @@ class Gocode:
     def get_documentation(self, offset: int):
 
         candidates = itertools.chain(
-            self.gocode_exec(self.source, workdir=self.workdir, location=offset),
+            self.gocode_exec(self.source, file_path=self.file_path, location=offset),
             self.keywords,
             self.builtin_results,
         )
@@ -304,13 +305,13 @@ class Godoc:
         return "<div style='border: 0.5em;display: block'>%s</div>" % break_lines
 
 
-def get_completion(source: str, workdir: str, location: int):
-    gocode = Gocode(source, workdir)
+def get_completion(source: str, file_path: str, location: int):
+    gocode = Gocode(source, file_path)
     yield from gocode.complete(location)
 
 
-def get_documentation(source: str, workdir: str, location: int):
-    gocode = Gocode(source, workdir)
+def get_documentation(source: str, file_path: str, location: int):
+    gocode = Gocode(source, file_path)
     return Documentation.from_gocoderesult(gocode.get_documentation(location)).to_html()
 
 
