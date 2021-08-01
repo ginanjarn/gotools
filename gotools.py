@@ -158,21 +158,14 @@ class Event(sublime_plugin.ViewEventListener):
 
         logger.debug("compare line: %s", line_str)
 
-        matched = re.match(r".*(?:package|import).*", line_str)
+        matched = re.match(r".*(?:const|type|var)(\s*\w*)$", line_str,)
         if matched:
             return True
 
         matched = re.match(
-            r".*(?:var|const)(?:\s*\w*|(?:\s+\w+)\s+\w+\s*\w*)$", line_str
+            r".*(?:break|continue|func|import|interface|package|struct)(\s*\w*)*$",
+            line_str,
         )
-        if matched:
-            return True
-
-        matched = re.match(r".*(?:type)(?:\s*\w*|(?:\s+\w+\s+\w+)\s*)$", line_str)
-        if matched:
-            return True
-
-        matched = re.match(r".*(?:func\s*)(?:\w*|\(\s*\w*|\(.*\)\s*\w*\s*)$", line_str,)
         if matched:
             return True
 
@@ -267,7 +260,7 @@ class Event(sublime_plugin.ViewEventListener):
         end = view.word(location).b
         source = view.substr(sublime.Region(0, view.size()))
         file_path = view.file_name()
-        
+
         documentation = get_documentation(source, file_path, end)
         self.popup_location = location
         self.popup_content = documentation
