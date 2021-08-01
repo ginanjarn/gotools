@@ -103,13 +103,9 @@ class Gocode:
         GocodeResult("func", "cap", "func(v Type) int", "builtin"),
         GocodeResult("func", "copy", "func(dst, src []Type) int", "builtin"),
         GocodeResult("func", "len", "func(v Type) int", "builtin"),
-        GocodeResult("type", "ComplexType", "", "builtin"),
         GocodeResult("func", "complex", "func(r, i FloatType) ComplexType", "builtin"),
-        GocodeResult("type", "FloatType", "", "builtin"),
         GocodeResult("func", "imag", "func(c ComplexType) FloatType", "builtin"),
         GocodeResult("func", "real", "func(c ComplexType) FloatType", "builtin"),
-        GocodeResult("type", "IntegerType", "", "builtin"),
-        GocodeResult("type", "Type", "", "builtin"),
         GocodeResult("var", "nil", "", "builtin"),
         GocodeResult(
             "func", "append", "func(slice []Type, elems ...Type) []Type", "builtin"
@@ -118,7 +114,6 @@ class Gocode:
             "func", "make", "func(t Type, size ...IntegerType) Type", "builtin"
         ),
         GocodeResult("func", "new", "func(Type) *Type", "builtin"),
-        GocodeResult("type", "Type1", "", "builtin"),
         GocodeResult("type", "bool", "", "builtin"),
         GocodeResult("type", "byte", "", "builtin"),
         GocodeResult("type", "complex128", "", "builtin"),
