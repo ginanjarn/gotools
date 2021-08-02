@@ -2,6 +2,7 @@
 
 
 from collections import namedtuple
+from html import escape
 import itertools
 import logging
 import os
@@ -26,10 +27,11 @@ class Gocode:
         for line in raw.splitlines():
             yield GocodeResult(*line.split(",,"))
 
-    def gocode_exec(self, source: str, workdir: str, location: int):
+    def gocode_exec(self, source: str, file_path: str, location: int):
 
-        command = ["gocode", "-f=csv", "autocomplete", "c%s" % location]
+        command = ["gocode", "-f=csv", "autocomplete", file_path, "c%s" % location]
         env = os.environ.copy()
+        workdir = os.path.dirname(file_path)
 
         if os.name == "nt":
             # STARTUPINFO only available on windows
@@ -52,7 +54,7 @@ class Gocode:
             sout, serr = process.communicate(source.encode("utf8"))
             if serr:
                 logger.debug(
-                    "completion error:\n%s" % ("\n".join(serr.decode().splitlines()))
+                    "gocode error:\n%s" % ("\n".join(serr.decode().splitlines()))
                 )
                 return
 
@@ -101,13 +103,9 @@ class Gocode:
         GocodeResult("func", "cap", "func(v Type) int", "builtin"),
         GocodeResult("func", "copy", "func(dst, src []Type) int", "builtin"),
         GocodeResult("func", "len", "func(v Type) int", "builtin"),
-        GocodeResult("type", "ComplexType", "", "builtin"),
         GocodeResult("func", "complex", "func(r, i FloatType) ComplexType", "builtin"),
-        GocodeResult("type", "FloatType", "", "builtin"),
         GocodeResult("func", "imag", "func(c ComplexType) FloatType", "builtin"),
         GocodeResult("func", "real", "func(c ComplexType) FloatType", "builtin"),
-        GocodeResult("type", "IntegerType", "", "builtin"),
-        GocodeResult("type", "Type", "", "builtin"),
         GocodeResult("var", "nil", "", "builtin"),
         GocodeResult(
             "func", "append", "func(slice []Type, elems ...Type) []Type", "builtin"
@@ -116,7 +114,6 @@ class Gocode:
             "func", "make", "func(t Type, size ...IntegerType) Type", "builtin"
         ),
         GocodeResult("func", "new", "func(Type) *Type", "builtin"),
-        GocodeResult("type", "Type1", "", "builtin"),
         GocodeResult("type", "bool", "", "builtin"),
         GocodeResult("type", "byte", "", "builtin"),
         GocodeResult("type", "complex128", "", "builtin"),
@@ -139,26 +136,28 @@ class Gocode:
         GocodeResult("type", "uintptr", "", "builtin"),
     )
 
-    def __init__(self, source: str, workdir: str):
+    def __init__(self, source: str, file_path: str):
         self.source = source
-        self.workdir = workdir
+        self.file_path = file_path
 
     def complete(self, offset: int):
         *_, last_line = self.source[:offset].splitlines()
 
         if re.match(r"(?:.*)(\w+)(?:\.\w*)$", last_line):
             yield from self.gocode_exec(
-                self.source, workdir=self.workdir, location=offset
+                self.source, file_path=self.file_path, location=offset,
             )
             return
 
         candidates = itertools.chain(
-            self.gocode_exec(self.source, workdir=self.workdir, location=offset),
+            self.gocode_exec(self.source, file_path=self.file_path, location=offset),
             self.keywords,
             self.builtin_results,
         )
 
-        if re.match(r"(?:.*func.*)([\(\,]\s*\w+\s+\w*)?(\)(?:\s*\w*\s*\,*)*)$", last_line,):
+        if re.match(
+            r"(?:.*func.*)([\(\,]\s*\w+\s+\w*)?(\)(?:\s*\w*\s*\,*)*)$", last_line,
+        ):
             for completion in candidates:
                 if completion.type_ == "type":
                     yield completion
@@ -170,12 +169,16 @@ class Gocode:
     def get_documentation(self, offset: int):
 
         candidates = itertools.chain(
-            self.gocode_exec(self.source, workdir=self.workdir, location=offset),
+            self.gocode_exec(self.source, file_path=self.file_path, location=offset),
             self.keywords,
             self.builtin_results,
         )
 
         *_, last_line = self.source[:offset].splitlines()
+
+        match = re.match(r"func\s+(\w+)\.*$", last_line,)
+        if match:
+            return None
 
         match = re.match(
             r".*[\/\\\(\)\"\'\-\:\,\.\;\<\>\~\!\@\#\$\%\^\&\*\|\+\=\[\]\{\}\`\~\?](\w+)$",
@@ -193,14 +196,123 @@ class Gocode:
                 return candidate
 
 
-def get_completion(source: str, workdir: str, location: int):
-    gocode = Gocode(source, workdir)
+class Documentation:
+    def __init__(self, doc: str, *, package: str = "", methodOrField: str = ""):
+        self.documentation = doc
+        self.pkg_methodOrField = "%s%s" % (
+            package,
+            "" if not methodOrField else "%s" % methodOrField,
+        )
+
+    def to_html(self):
+        if not self.documentation:
+            return ""
+
+        return "<div style='border: 0.5em;display: block'>{doc}<br><a href='{link}'>More...</a></div>".format(
+            doc=self.documentation, link=self.pkg_methodOrField,
+        )
+
+    @classmethod
+    def from_gocoderesult(cls, gocode_result):
+
+        logger.debug(gocode_result)
+        if not gocode_result:
+            return cls(doc="")
+
+        if (gocode_result.name == "main") or (gocode_result.data == "invalid type"):
+            return cls(doc="")
+
+        if gocode_result.type_ == "package":
+            doc = "package <strong>%s</strong>" % (gocode_result.name)
+            return cls(doc, package=gocode_result.name)
+
+        package = "%s." % gocode_result.package if gocode_result.package else ""
+
+        if gocode_result.type_ == "func":
+            doc = "<i>%s</i><strong>%s</strong>%s" % (
+                package,
+                gocode_result.name,
+                gocode_result.data[4:],
+            )
+            return cls(doc, package=package, methodOrField=gocode_result.name)
+
+        doc = "<i>%s</i><strong>%s</strong> %s" % (
+            package,
+            gocode_result.name,
+            gocode_result.data,
+        )
+        return cls(doc, package=package, methodOrField=gocode_result.name)
+
+
+class Godoc:
+    """get documentation from godoc"""
+
+    @staticmethod
+    def get_godoc(methodOrField: str, workdir: str):
+
+        command = ["go", "doc", methodOrField]
+        env = os.environ.copy()
+
+        if os.name == "nt":
+            # STARTUPINFO only available on windows
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
+        else:
+            startupinfo = None
+
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                startupinfo=startupinfo,
+                shell=True,
+                env=env,
+                cwd=workdir,
+            )
+            sout, serr = process.communicate()
+            if serr:
+                logger.debug(
+                    "go doc error:\n%s" % ("\n".join(serr.decode().splitlines()))
+                )
+                return ""
+
+            return sout.decode("utf8")
+
+        except OSError as err:
+            logger.error(err)
+
+    def __init__(self, methodOrField: str, workdir: str):
+        self.documentation = self.get_godoc(methodOrField, workdir)
+
+    def to_html(self):
+        if not self.documentation:
+            return ""
+
+        html_escaped = escape(self.documentation)
+        tab_expanded = html_escaped.expandtabs(4)
+        space_replaced = tab_expanded.replace(" ", "&nbsp;")  # non-breakable space
+        paragraph_wrapped = "".join(
+            ("<p>%s</p>" % lines for lines in space_replaced.split("\n\n"))
+        )
+        break_lines = "<br>".join(paragraph_wrapped.splitlines())
+        return "<div style='border: 0.5em;display: block'>%s</div>" % break_lines
+
+
+def get_completion(source: str, file_path: str, location: int):
+    gocode = Gocode(source, file_path)
     yield from gocode.complete(location)
 
 
-def get_documentation(source: str, workdir: str, location: int):
-    gocode = Gocode(source, workdir)
-    return gocode.get_documentation(location)
+def get_documentation(source: str, file_path: str, location: int):
+    gocode = Gocode(source, file_path)
+    return Documentation.from_gocoderesult(gocode.get_documentation(location)).to_html()
+
+
+def get_godoc_documentation(methodOrField: str, workdir: str):
+    godoc = Godoc(methodOrField, workdir)
+    return godoc.to_html()
 
 
 def get_formatted_code(source: str):
