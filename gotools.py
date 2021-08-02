@@ -21,6 +21,7 @@ from .core.api import (
     get_documentation,
     get_formatted_code,
     get_diagnostic,
+    get_godoc_documentation,
 )
 
 from .core.sublime_text import (
@@ -107,53 +108,6 @@ class CompletionContextMatcher:
         return self.completions
 
 
-class Documentation:
-    def __init__(self, doc: str, *, package: str = "", methodOrField: str = ""):
-        self.documentation = doc
-        self.pkg_method = "%s%s" % (
-            package,
-            "" if not methodOrField else "%s" % methodOrField,
-        )
-
-    @classmethod
-    def from_gocoderesult(cls, gocode_results):
-
-        result = gocode_results
-        if not result:
-            return cls(doc="")
-
-        logger.debug(result)
-
-        if result.name == "main":
-            return cls(doc="")
-
-        if result.data == "invalid type":
-            return cls(doc="")
-
-        doc_template = "<div style='padding: 0.5em;'>{body}</div>"
-
-        if result.type_ == "package":
-            doc = doc_template.format(
-                body="package <strong>%s</strong>" % (result.name)
-            )
-            return cls(doc, package=result.name)
-
-        package = "%s." % result.package if result.package else ""
-
-        if result.type_ == "func":
-            body = "<i>%s</i><strong>%s</strong>%s" % (
-                package,
-                result.name,
-                result.data[4:],
-            )
-            doc = doc_template.format(body=body)
-            return cls(doc, package=result.package, methodOrField=result.name)
-
-        body = "<i>%s</i><strong>%s</strong> %s" % (package, result.name, result.data,)
-        doc = doc_template.format(body=body)
-        return cls(doc, package=result.package, methodOrField=result.name)
-
-
 def valid_source(view: sublime.View, location: int = 0) -> bool:
     """valid go source code"""
     return view.match_selector(location, "source.go")
@@ -204,21 +158,14 @@ class Event(sublime_plugin.ViewEventListener):
 
         logger.debug("compare line: %s", line_str)
 
-        matched = re.match(r".*(?:package|import).*", line_str)
+        matched = re.match(r".*(?:const|type|var)(\s*\w*)$", line_str,)
         if matched:
             return True
 
         matched = re.match(
-            r".*(?:var|const)(?:\s*\w*|(?:\s+\w+)\s+\w+\s*\w*)$", line_str
+            r".*(?:break|continue|func|import|interface|package|struct)(\s*\w*)*$",
+            line_str,
         )
-        if matched:
-            return True
-
-        matched = re.match(r".*(?:type)(?:\s*\w*|(?:\s+\w+\s+\w+)\s*)$", line_str)
-        if matched:
-            return True
-
-        matched = re.match(r".*(?:func\s*)(?:\w*|\(\s*\w*|\(.*\)\s*\w*\s*)$", line_str,)
         if matched:
             return True
 
@@ -227,14 +174,14 @@ class Event(sublime_plugin.ViewEventListener):
     def completion_thread(self, view: sublime.View):
         source = view.substr(sublime.Region(0, view.size()))
         location = view.sel()[0].a
-        workdir = os.path.dirname(view.file_name())
+        file_path = view.file_name()
 
-        raw_completions = get_completion(source, workdir, location)
+        raw_completions = get_completion(source, file_path, location)
 
         line_region = view.line(location)
         line_str = view.substr(sublime.Region(line_region.a, location))
-        cm = CompletionContextMatcher(raw_completions)
 
+        cm = CompletionContextMatcher(raw_completions)
         raw_completions = cm.get_matched(line_str)
 
         completion = Completion.from_gocoderesult(raw_completions)
@@ -291,18 +238,40 @@ class Event(sublime_plugin.ViewEventListener):
             if not str.isidentifier(word):
                 view.run_command("hide_auto_complete")
 
+    def get_godoc_thread(self, methodOrField):
+        view = self.view
+        view.update_popup(self.popup_content + "<br>loading . . .<br>")
+
+        workdir = os.path.dirname(view.file_name())
+        content = get_godoc_documentation(methodOrField, workdir)
+
+        if content:
+            show_popup(
+                view, content=content, location=self.popup_location,
+            )
+        else:
+            view.update_popup(self.popup_content)
+
+    def get_godoc_documentation(self, methodOrField):
+        thread = threading.Thread(target=self.get_godoc_thread, args=(methodOrField,))
+        thread.start()
+
     def get_documentation(self, view: sublime.View, location: int):
         end = view.word(location).b
         source = view.substr(sublime.Region(0, view.size()))
-        workdir = os.path.dirname(view.file_name())
-        candidates = get_documentation(source, workdir, end)
-        if not candidates:
-            return
+        file_path = view.file_name()
 
-        doc = Documentation.from_gocoderesult(candidates)
+        documentation = get_documentation(source, file_path, end)
+        self.popup_location = location
+        self.popup_content = documentation
 
-        if doc.documentation:
-            show_popup(view, content=doc.documentation, location=location)
+        if documentation:
+            show_popup(
+                view,
+                content=self.popup_content,
+                location=self.popup_location,
+                on_navigate=self.get_godoc_documentation,
+            )
 
     def on_hover(self, point: int, hover_zone: int):
         if not PLUGIN_ENABLED:
