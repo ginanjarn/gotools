@@ -29,7 +29,15 @@ class Gocode:
 
     def gocode_exec(self, source: str, file_path: str, location: int):
 
-        command = ["gocode", "-f=csv", "autocomplete", file_path, "c%s" % location]
+        command = [
+            "gocode",
+            "-builtin",
+            "-ignore-case",
+            "-f=csv",
+            "autocomplete",
+            file_path,
+            "c%s" % location,
+        ]
         env = os.environ.copy()
         workdir = os.path.dirname(file_path)
 
