@@ -232,7 +232,7 @@ class Documentation:
             doc = "<i>%s</i><strong>%s</strong>%s" % (
                 package,
                 gocode_result.name,
-                gocode_result.data[4:],
+                escape(gocode_result.data[4:]),
             )
             return cls(doc, package=package, methodOrField=gocode_result.name)
 
