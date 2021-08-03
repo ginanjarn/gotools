@@ -99,51 +99,6 @@ class Gocode:
         GocodeResult("keyword", "var", "", ""),
     )
 
-    builtin_results = (
-        GocodeResult("const", "true", "", "builtin"),
-        GocodeResult("const", "iota", "", "builtin"),
-        GocodeResult("func", "close", "func(c chan<- Type)", "builtin"),
-        GocodeResult("func", "delete", "func(m map[Type]Type1, key Type)", "builtin"),
-        GocodeResult("func", "panic", "func(v interface{})", "builtin"),
-        GocodeResult("func", "print", "func(args ...Type)", "builtin"),
-        GocodeResult("func", "println", "func(args ...Type)", "builtin"),
-        GocodeResult("func", "recover", "func() interface{}", "builtin"),
-        GocodeResult("func", "cap", "func(v Type) int", "builtin"),
-        GocodeResult("func", "copy", "func(dst, src []Type) int", "builtin"),
-        GocodeResult("func", "len", "func(v Type) int", "builtin"),
-        GocodeResult("func", "complex", "func(r, i FloatType) ComplexType", "builtin"),
-        GocodeResult("func", "imag", "func(c ComplexType) FloatType", "builtin"),
-        GocodeResult("func", "real", "func(c ComplexType) FloatType", "builtin"),
-        GocodeResult("var", "nil", "", "builtin"),
-        GocodeResult(
-            "func", "append", "func(slice []Type, elems ...Type) []Type", "builtin"
-        ),
-        GocodeResult(
-            "func", "make", "func(t Type, size ...IntegerType) Type", "builtin"
-        ),
-        GocodeResult("func", "new", "func(Type) *Type", "builtin"),
-        GocodeResult("type", "bool", "", "builtin"),
-        GocodeResult("type", "byte", "", "builtin"),
-        GocodeResult("type", "complex128", "", "builtin"),
-        GocodeResult("type", "complex64", "", "builtin"),
-        GocodeResult("type", "error", "", "builtin"),
-        GocodeResult("type", "float32", "", "builtin"),
-        GocodeResult("type", "float64", "", "builtin"),
-        GocodeResult("type", "int", "", "builtin"),
-        GocodeResult("type", "int16", "", "builtin"),
-        GocodeResult("type", "int32", "", "builtin"),
-        GocodeResult("type", "int64", "", "builtin"),
-        GocodeResult("type", "int8", "", "builtin"),
-        GocodeResult("type", "rune", "", "builtin"),
-        GocodeResult("type", "string", "", "builtin"),
-        GocodeResult("type", "uint", "", "builtin"),
-        GocodeResult("type", "uint16", "", "builtin"),
-        GocodeResult("type", "uint32", "", "builtin"),
-        GocodeResult("type", "uint64", "", "builtin"),
-        GocodeResult("type", "uint8", "", "builtin"),
-        GocodeResult("type", "uintptr", "", "builtin"),
-    )
-
     def __init__(self, source: str, file_path: str):
         self.source = source
         self.file_path = file_path
@@ -160,7 +115,6 @@ class Gocode:
         candidates = itertools.chain(
             self.gocode_exec(self.source, file_path=self.file_path, location=offset),
             self.keywords,
-            self.builtin_results,
         )
 
         if re.match(
@@ -179,7 +133,6 @@ class Gocode:
         candidates = itertools.chain(
             self.gocode_exec(self.source, file_path=self.file_path, location=offset),
             self.keywords,
-            self.builtin_results,
         )
 
         *_, last_line = self.source[:offset].splitlines()
