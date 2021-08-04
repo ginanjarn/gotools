@@ -8,6 +8,7 @@ sh.setFormatter(logging.Formatter(stream_formatter))
 sh.setLevel(logging.DEBUG)
 logger.addHandler(sh)
 
+from functools import wraps
 import difflib
 import os
 import re
@@ -31,6 +32,22 @@ from .core.sublime_text import (
     DiagnosticPanel,
     ErrorPanel,
 )
+
+PROCESS_LOCK = threading.Lock()
+
+
+def process_lock(func):
+    """process pipeline. single process allowed"""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if PROCESS_LOCK.locked():
+            return None
+
+        with PROCESS_LOCK:
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 class Completion:
@@ -145,12 +162,16 @@ def plugin_loaded():
     enable_plugin()
 
 
+COMPLETION_LOCK = threading.Lock()
+
+
 class Event(sublime_plugin.ViewEventListener):
     """Event handler"""
 
     def __init__(self, view: sublime.View):
         self.view = view
         self.completions = None
+        self.context_pos = 0
 
     def cancel_completion(self, view: sublime.View, location: int):
         line_region = view.line(location)
@@ -171,21 +192,23 @@ class Event(sublime_plugin.ViewEventListener):
 
         return False
 
+    @process_lock
     def completion_thread(self, view: sublime.View):
-        source = view.substr(sublime.Region(0, view.size()))
-        location = view.sel()[0].a
-        file_path = view.file_name()
+        with COMPLETION_LOCK:
+            source = view.substr(sublime.Region(0, view.size()))
+            location = view.sel()[0].a
+            file_path = view.file_name()
 
-        raw_completions = get_completion(source, file_path, location)
+            raw_completions = get_completion(source, file_path, location)
 
-        line_region = view.line(location)
-        line_str = view.substr(sublime.Region(line_region.a, location))
+            line_region = view.line(location)
+            line_str = view.substr(sublime.Region(line_region.a, location))
 
-        cm = CompletionContextMatcher(raw_completions)
-        raw_completions = cm.get_matched(line_str)
+            cm = CompletionContextMatcher(raw_completions)
+            raw_completions = cm.get_matched(line_str)
 
-        completion = Completion.from_gocoderesult(raw_completions)
-        self.completions = completion.to_sublime()
+            completion = Completion.from_gocoderesult(raw_completions)
+            self.completions = completion.to_sublime()
 
         show_completions(view)
 
@@ -203,6 +226,22 @@ class Event(sublime_plugin.ViewEventListener):
             logger.debug("canceled")
             hide_completions(self.view)
             return None
+
+        if COMPLETION_LOCK.locked():
+            self.view.run_command("hide_auto_complete")
+            return None
+
+        context_pos = 0
+        if str.isidentifier(prefix):
+            context_pos = self.view.word(locations[0]).a
+        else:
+            context_pos = locations[0]
+
+        if self.context_pos != context_pos:
+            self.completions = None
+            self.view.run_command("hide_auto_complete")
+
+        self.context_pos = context_pos
 
         if self.completions:
             completions = self.completions
@@ -238,6 +277,7 @@ class Event(sublime_plugin.ViewEventListener):
             if not str.isidentifier(word):
                 view.run_command("hide_auto_complete")
 
+    @process_lock
     def get_godoc_thread(self, methodOrField):
         view = self.view
         view.update_popup(self.popup_content + "<br>loading . . .<br>")
@@ -256,6 +296,7 @@ class Event(sublime_plugin.ViewEventListener):
         thread = threading.Thread(target=self.get_godoc_thread, args=(methodOrField,))
         thread.start()
 
+    @process_lock
     def get_documentation(self, view: sublime.View, location: int):
         end = view.word(location).b
         source = view.substr(sublime.Region(0, view.size()))
