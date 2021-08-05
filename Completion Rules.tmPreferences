@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>scope</key>
+	<string>source.go</string>
+	<key>settings</key>
+	<dict>
+		<key>cancelCompletion</key>
+		<string>(?x)
+		# cancel next
+		\b(package|import)(\s*\w*)*$
+		| # cancel for complete name
+		^\s*(type|const|var|func)\s*\w*$
+		| # cancel to end of line
+		^\s*(break|continue|fallthrough).*$
+		| # cancel for func name
+		\b(?:func\s*)(?:\(.*\))*(\w*\s*)*$
+		| # cancel for next identifier
+		^.*(struct|interface|func)(\s*\w*)*$		
+		</string>
+	</dict>
+</dict>
+</plist>

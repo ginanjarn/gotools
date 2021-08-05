@@ -173,25 +173,6 @@ class Event(sublime_plugin.ViewEventListener):
         self.completions = None
         self.context_pos = 0
 
-    def cancel_completion(self, view: sublime.View, location: int):
-        line_region = view.line(location)
-        line_str = view.substr(sublime.Region(line_region.a, location))
-
-        logger.debug("compare line: %s", line_str)
-
-        matched = re.match(r".*(?:const|type|var)(\s*\w*)$", line_str,)
-        if matched:
-            return True
-
-        matched = re.match(
-            r".*(?:break|continue|func|import|interface|package|struct)(\s*\w*)*$",
-            line_str,
-        )
-        if matched:
-            return True
-
-        return False
-
     @process_lock
     def completion_thread(self, view: sublime.View):
         with COMPLETION_LOCK:
@@ -221,11 +202,6 @@ class Event(sublime_plugin.ViewEventListener):
 
         if not valid_scope(self.view, locations[0]):
             return ((), sublime.INHIBIT_EXPLICIT_COMPLETIONS)
-
-        if self.cancel_completion(self.view, locations[0]):
-            logger.debug("canceled")
-            hide_completions(self.view)
-            return None
 
         if COMPLETION_LOCK.locked():
             self.view.run_command("hide_auto_complete")
