@@ -169,7 +169,7 @@ class Documentation:
         if not self.documentation:
             return ""
 
-        return "<div style='border: 0.5em;display: block'>{doc}<br><a href='{link}'>More...</a></div>".format(
+        return "<div style='border: 0.5em;display: block'>{doc}<a href='{link}'>More...</a></div>".format(
             doc=self.documentation, link=self.pkg_methodOrField,
         )
 
@@ -184,20 +184,24 @@ class Documentation:
             return cls(doc="")
 
         if gocode_result.type_ == "package":
-            doc = "package <strong>%s</strong>" % (gocode_result.name)
+            doc = "<p><em>package</em> <strong>%s</strong></p>" % (gocode_result.name)
             return cls(doc, package=gocode_result.name)
 
-        package = "%s." % gocode_result.package if gocode_result.package else ""
+        package = (
+            "<em>package: %s</em>" % gocode_result.package
+            if gocode_result.package
+            else ""
+        )
 
         if gocode_result.type_ == "func":
-            doc = "<i>%s</i><strong>%s</strong>%s" % (
+            doc = "%s<p><strong>%s</strong>%s</p>" % (
                 package,
                 gocode_result.name,
                 escape(gocode_result.data[4:]),
             )
             return cls(doc, package=package, methodOrField=gocode_result.name)
 
-        doc = "<i>%s</i><strong>%s</strong> %s" % (
+        doc = "%s<p><strong>%s</strong> %s</p>" % (
             package,
             gocode_result.name,
             gocode_result.data,
