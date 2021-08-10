@@ -27,18 +27,21 @@ class Gocode:
         for line in raw.splitlines():
             yield GocodeResult(*line.split(",,"))
 
-    def gocode_exec(self, source: str, file_path: str, location: int):
+    def gocode_exec(self, source: str, file_path: str, location: int, ignore_case=True):
 
         command = [
             "gocode",
             "-builtin",
-            "-ignore-case",
             "-f=csv",
             "autocomplete",
             file_path,
             "c%s" % location,
         ]
-        env = os.environ.copy()
+
+        if ignore_case:
+            command.insert(1, "-ignore-case")
+
+        env = os.environ
         workdir = os.path.dirname(file_path)
 
         if os.name == "nt":
@@ -131,7 +134,12 @@ class Gocode:
     def get_documentation(self, offset: int):
 
         candidates = itertools.chain(
-            self.gocode_exec(self.source, file_path=self.file_path, location=offset),
+            self.gocode_exec(
+                self.source,
+                file_path=self.file_path,
+                location=offset,
+                ignore_case=False,
+            ),
             self.keywords,
         )
 
@@ -160,10 +168,7 @@ class Gocode:
 class Documentation:
     def __init__(self, doc: str, *, package: str = "", methodOrField: str = ""):
         self.documentation = doc
-        self.pkg_methodOrField = "%s%s" % (
-            package,
-            "" if not methodOrField else "%s" % methodOrField,
-        )
+        self.pkg_methodOrField = ".".join([package, methodOrField])
 
     def to_html(self):
         if not self.documentation:
@@ -177,34 +182,34 @@ class Documentation:
     def from_gocoderesult(cls, gocode_result):
 
         logger.debug(gocode_result)
+
         if not gocode_result:
             return cls(doc="")
 
         if (gocode_result.name == "main") or (gocode_result.data == "invalid type"):
             return cls(doc="")
 
-        if gocode_result.type_ == "package":
-            doc = "<p><em>package</em> <strong>%s</strong></p>" % (gocode_result.name)
-            return cls(doc, package=gocode_result.name)
+        package = gocode_result.package if gocode_result.package else ""
 
-        package = (
-            "<em>package: %s</em>" % gocode_result.package
-            if gocode_result.package
-            else ""
+        if gocode_result.type_ == "package":
+            package = gocode_result.name
+
+        package_str = "package: <strong>%s</strong>" % package if package else ""
+
+        if gocode_result.type_ == "package":
+            doc = "<p>%s</p>" % (package_str)
+            return cls(doc, package=package)
+
+        annotation = (
+            escape(gocode_result.data[4:])
+            if gocode_result.type_ == "func"
+            else gocode_result.data
         )
 
-        if gocode_result.type_ == "func":
-            doc = "%s<p><strong>%s</strong>%s</p>" % (
-                package,
-                gocode_result.name,
-                escape(gocode_result.data[4:]),
-            )
-            return cls(doc, package=package, methodOrField=gocode_result.name)
-
-        doc = "%s<p><strong>%s</strong> %s</p>" % (
-            package,
+        doc = "<em>%s</em><p><strong>%s</strong> %s</p>" % (
+            package_str,
             gocode_result.name,
-            gocode_result.data,
+            annotation,
         )
         return cls(doc, package=package, methodOrField=gocode_result.name)
 
@@ -216,7 +221,9 @@ class Godoc:
     def get_godoc(methodOrField: str, workdir: str):
 
         command = ["go", "doc", methodOrField]
-        env = os.environ.copy()
+        logger.debug(command)
+
+        env = os.environ
 
         if os.name == "nt":
             # STARTUPINFO only available on windows
@@ -249,7 +256,23 @@ class Godoc:
             logger.error(err)
 
     def __init__(self, methodOrField: str, workdir: str):
-        self.documentation = self.get_godoc(methodOrField, workdir)
+
+        pkg, identifier = methodOrField.split(".")
+
+        if (not pkg) and (not str.istitle(identifier)):
+            # this case for local not exported method or field
+            self.documentation = ""
+
+        elif not pkg:
+            # this case for local exported method of field
+            self.documentation = self.get_godoc(identifier, workdir)
+
+        elif not identifier:
+            # this case for package without identifier
+            self.documentation = self.get_godoc(pkg, workdir)
+
+        else:
+            self.documentation = self.get_godoc(methodOrField, workdir)
 
     def to_html(self):
         if not self.documentation:
