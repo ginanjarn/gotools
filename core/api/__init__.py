@@ -27,10 +27,21 @@ class Gocode:
         for line in raw.splitlines():
             yield GocodeResult(*line.split(",,"))
 
-    def gocode_exec(self, source: str, file_path: str, location: int):
+    def gocode_exec(self, source: str, file_path: str, location: int, ignore_case=True):
 
-        command = ["gocode", "-f=csv", "autocomplete", file_path, "c%s" % location]
-        env = os.environ.copy()
+        command = [
+            "gocode",
+            "-builtin",
+            "-f=csv",
+            "autocomplete",
+            file_path,
+            "c%s" % location,
+        ]
+
+        if ignore_case:
+            command.insert(1, "-ignore-case")
+
+        env = os.environ
         workdir = os.path.dirname(file_path)
 
         if os.name == "nt":
@@ -91,51 +102,6 @@ class Gocode:
         GocodeResult("keyword", "var", "", ""),
     )
 
-    builtin_results = (
-        GocodeResult("const", "true", "", "builtin"),
-        GocodeResult("const", "iota", "", "builtin"),
-        GocodeResult("func", "close", "func(c chan<- Type)", "builtin"),
-        GocodeResult("func", "delete", "func(m map[Type]Type1, key Type)", "builtin"),
-        GocodeResult("func", "panic", "func(v interface{})", "builtin"),
-        GocodeResult("func", "print", "func(args ...Type)", "builtin"),
-        GocodeResult("func", "println", "func(args ...Type)", "builtin"),
-        GocodeResult("func", "recover", "func() interface{}", "builtin"),
-        GocodeResult("func", "cap", "func(v Type) int", "builtin"),
-        GocodeResult("func", "copy", "func(dst, src []Type) int", "builtin"),
-        GocodeResult("func", "len", "func(v Type) int", "builtin"),
-        GocodeResult("func", "complex", "func(r, i FloatType) ComplexType", "builtin"),
-        GocodeResult("func", "imag", "func(c ComplexType) FloatType", "builtin"),
-        GocodeResult("func", "real", "func(c ComplexType) FloatType", "builtin"),
-        GocodeResult("var", "nil", "", "builtin"),
-        GocodeResult(
-            "func", "append", "func(slice []Type, elems ...Type) []Type", "builtin"
-        ),
-        GocodeResult(
-            "func", "make", "func(t Type, size ...IntegerType) Type", "builtin"
-        ),
-        GocodeResult("func", "new", "func(Type) *Type", "builtin"),
-        GocodeResult("type", "bool", "", "builtin"),
-        GocodeResult("type", "byte", "", "builtin"),
-        GocodeResult("type", "complex128", "", "builtin"),
-        GocodeResult("type", "complex64", "", "builtin"),
-        GocodeResult("type", "error", "", "builtin"),
-        GocodeResult("type", "float32", "", "builtin"),
-        GocodeResult("type", "float64", "", "builtin"),
-        GocodeResult("type", "int", "", "builtin"),
-        GocodeResult("type", "int16", "", "builtin"),
-        GocodeResult("type", "int32", "", "builtin"),
-        GocodeResult("type", "int64", "", "builtin"),
-        GocodeResult("type", "int8", "", "builtin"),
-        GocodeResult("type", "rune", "", "builtin"),
-        GocodeResult("type", "string", "", "builtin"),
-        GocodeResult("type", "uint", "", "builtin"),
-        GocodeResult("type", "uint16", "", "builtin"),
-        GocodeResult("type", "uint32", "", "builtin"),
-        GocodeResult("type", "uint64", "", "builtin"),
-        GocodeResult("type", "uint8", "", "builtin"),
-        GocodeResult("type", "uintptr", "", "builtin"),
-    )
-
     def __init__(self, source: str, file_path: str):
         self.source = source
         self.file_path = file_path
@@ -152,7 +118,6 @@ class Gocode:
         candidates = itertools.chain(
             self.gocode_exec(self.source, file_path=self.file_path, location=offset),
             self.keywords,
-            self.builtin_results,
         )
 
         if re.match(
@@ -169,9 +134,13 @@ class Gocode:
     def get_documentation(self, offset: int):
 
         candidates = itertools.chain(
-            self.gocode_exec(self.source, file_path=self.file_path, location=offset),
+            self.gocode_exec(
+                self.source,
+                file_path=self.file_path,
+                location=offset,
+                ignore_case=False,
+            ),
             self.keywords,
-            self.builtin_results,
         )
 
         *_, last_line = self.source[:offset].splitlines()
@@ -199,16 +168,13 @@ class Gocode:
 class Documentation:
     def __init__(self, doc: str, *, package: str = "", methodOrField: str = ""):
         self.documentation = doc
-        self.pkg_methodOrField = "%s%s" % (
-            package,
-            "" if not methodOrField else "%s" % methodOrField,
-        )
+        self.pkg_methodOrField = ".".join([package, methodOrField])
 
     def to_html(self):
         if not self.documentation:
             return ""
 
-        return "<div style='border: 0.5em;display: block'>{doc}<br><a href='{link}'>More...</a></div>".format(
+        return "<div style='border: 0.5em;display: block'>{doc}<a href='{link}'>More...</a></div>".format(
             doc=self.documentation, link=self.pkg_methodOrField,
         )
 
@@ -216,30 +182,34 @@ class Documentation:
     def from_gocoderesult(cls, gocode_result):
 
         logger.debug(gocode_result)
+
         if not gocode_result:
             return cls(doc="")
 
         if (gocode_result.name == "main") or (gocode_result.data == "invalid type"):
             return cls(doc="")
 
+        package = gocode_result.package if gocode_result.package else ""
+
         if gocode_result.type_ == "package":
-            doc = "package <strong>%s</strong>" % (gocode_result.name)
-            return cls(doc, package=gocode_result.name)
+            package = gocode_result.name
 
-        package = "%s." % gocode_result.package if gocode_result.package else ""
+        package_str = "package: <strong>%s</strong>" % package if package else ""
 
-        if gocode_result.type_ == "func":
-            doc = "<i>%s</i><strong>%s</strong>%s" % (
-                package,
-                gocode_result.name,
-                gocode_result.data[4:],
-            )
-            return cls(doc, package=package, methodOrField=gocode_result.name)
+        if gocode_result.type_ == "package":
+            doc = "<p>%s</p>" % (package_str)
+            return cls(doc, package=package)
 
-        doc = "<i>%s</i><strong>%s</strong> %s" % (
-            package,
+        annotation = (
+            escape(gocode_result.data[4:])
+            if gocode_result.type_ == "func"
+            else gocode_result.data
+        )
+
+        doc = "<em>%s</em><p><strong>%s</strong> %s</p>" % (
+            package_str,
             gocode_result.name,
-            gocode_result.data,
+            annotation,
         )
         return cls(doc, package=package, methodOrField=gocode_result.name)
 
@@ -251,7 +221,9 @@ class Godoc:
     def get_godoc(methodOrField: str, workdir: str):
 
         command = ["go", "doc", methodOrField]
-        env = os.environ.copy()
+        logger.debug(command)
+
+        env = os.environ
 
         if os.name == "nt":
             # STARTUPINFO only available on windows
@@ -284,7 +256,23 @@ class Godoc:
             logger.error(err)
 
     def __init__(self, methodOrField: str, workdir: str):
-        self.documentation = self.get_godoc(methodOrField, workdir)
+
+        pkg, identifier = methodOrField.split(".")
+
+        if (not pkg) and (not str.istitle(identifier)):
+            # this case for local not exported method or field
+            self.documentation = ""
+
+        elif not pkg:
+            # this case for local exported method of field
+            self.documentation = self.get_godoc(identifier, workdir)
+
+        elif not identifier:
+            # this case for package without identifier
+            self.documentation = self.get_godoc(pkg, workdir)
+
+        else:
+            self.documentation = self.get_godoc(methodOrField, workdir)
 
     def to_html(self):
         if not self.documentation:
