@@ -109,7 +109,8 @@ class Gocode:
     def complete(self, offset: int):
         *_, last_line = self.source[:offset].splitlines()
 
-        if re.match(r"(?:.*)(\w+)(?:\.\w*)$", last_line):
+        # access member
+        if re.search(r"\w+[\w\)\]]?\.\w*$", last_line):
             yield from self.gocode_exec(
                 self.source, file_path=self.file_path, location=offset,
             )
@@ -119,15 +120,6 @@ class Gocode:
             self.gocode_exec(self.source, file_path=self.file_path, location=offset),
             self.keywords,
         )
-
-        if re.match(
-            r"(?:.*func.*)([\(\,]\s*\w+\s+\w*)?(\)(?:\s*\w*\s*\,*)*)$", last_line,
-        ):
-            for completion in candidates:
-                if completion.type_ == "type":
-                    yield completion
-
-            return
 
         yield from candidates
 
@@ -145,14 +137,7 @@ class Gocode:
 
         *_, last_line = self.source[:offset].splitlines()
 
-        match = re.match(r"func\s+(\w+)\.*$", last_line,)
-        if match:
-            return None
-
-        match = re.match(
-            r".*[\/\\\(\)\"\'\-\:\,\.\;\<\>\~\!\@\#\$\%\^\&\*\|\+\=\[\]\{\}\`\~\?](\w+)$",
-            last_line,
-        )
+        match = re.search(r"\W(\w+)$", last_line,)
         if match:
             name = match.group(1)
 
