@@ -385,10 +385,18 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
         return valid_source(self.view)
 
 
-class GotoolsValidateCommand(sublime_plugin.TextCommand):
-    """document formatter command"""
+class GotoolsVetFileCommand(sublime_plugin.TextCommand):
+    """document vet file command"""
 
     def run(self, edit):
+        view = self.view
+        view.run_command("gotools_vet", {"path": view.file_name()})
+
+
+class GotoolsVetCommand(sublime_plugin.TextCommand):
+    """document vet directory command"""
+
+    def run(self, edit, path=""):
         if not PLUGIN_ENABLED:
             return
 
@@ -397,19 +405,20 @@ class GotoolsValidateCommand(sublime_plugin.TextCommand):
         if not valid_source(view):
             return
 
-        thread = threading.Thread(target=self.diagnostic_thread, args=(view,))
+        if not path:
+            path = os.path.dirname(view.file_name())
+
+        thread = threading.Thread(target=self.diagnostic_thread, args=(view, path))
         thread.start()
 
-    def diagnostic_thread(self, view: sublime.View):
+    @process_lock
+    def diagnostic_thread(self, view: sublime.View, path: str):
 
-        file_name = view.file_name()
-        work_dir = os.path.dirname(file_name)
+        work_dir = path
+        if os.path.isfile(path):
+            work_dir = os.path.dirname(path)
 
-        for folder in view.window().folders():
-            if file_name.startswith(folder):
-                work_dir = folder
-
-        diagnostic = get_diagnostic(view.file_name(), workdir=work_dir)
+        diagnostic = get_diagnostic(path, workdir=work_dir)
         logger.debug(diagnostic)
 
         output_panel = DiagnosticPanel(self.view.window())
