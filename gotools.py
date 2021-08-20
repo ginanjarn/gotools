@@ -44,8 +44,14 @@ def process_lock(func):
         if PROCESS_LOCK.locked():
             return None
 
+        status_key = "gotools"
+        value = "BUSY"
+        view = sublime.active_window().active_view()
+        view.set_status(status_key, value)
         with PROCESS_LOCK:
-            return func(*args, **kwargs)
+            function = func(*args, **kwargs)
+            view.erase_status(status_key)
+            return function
 
     return wrapper
 
