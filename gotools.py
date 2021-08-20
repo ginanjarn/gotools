@@ -313,18 +313,21 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
             return
 
         view = self.view
-
         if not valid_source(view):
             return
 
+        self.do_formatting(view, edit)
+
+    @process_lock
+    def do_formatting(self, view, edit):
+
+        file_name = view.file_name()
         source = view.substr(sublime.Region(0, view.size()))
 
         try:
-            formatted = get_formatted_code(source, view.file_name())
+            formatted = get_formatted_code(source, file_name)
 
         except Exception as err:
-            file_name = os.path.basename(view.file_name())
-
             self.show_error_panel(
                 view.window(), str(err).replace("<standard input>", file_name),
             )
