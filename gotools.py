@@ -320,7 +320,7 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
         source = view.substr(sublime.Region(0, view.size()))
 
         try:
-            formatted = get_formatted_code(source)
+            formatted = get_formatted_code(source, view.file_name())
 
         except Exception as err:
             file_name = os.path.basename(view.file_name())

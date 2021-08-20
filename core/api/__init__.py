@@ -260,10 +260,18 @@ def get_documentation(source: str, file_path: str, location: int):
     ).to_html()
 
 
-def get_formatted_code(source: str):
+def get_formatted_code(source: str, file_path: str):
 
+    # default use gofmt
     command = ["gofmt"]
     env = os.environ.copy()
+    workdir = os.path.dirname(file_path)
+
+    # use goimports if available
+    gopath = env.get("GOPATH")
+    executable = "goimports.exe" if os.name == "nt" else "goimports"
+    if os.path.isfile(os.path.join(gopath, "bin", executable)):
+        command = ["goimports"]
 
     if os.name == "nt":
         # STARTUPINFO only available on windows
@@ -281,7 +289,7 @@ def get_formatted_code(source: str):
             startupinfo=startupinfo,
             shell=True,
             env=env,
-            # cwd=workdir,
+            cwd=workdir,
         )
         sout, serr = process.communicate(source.encode("utf8"))
         if serr:
