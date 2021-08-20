@@ -22,7 +22,6 @@ from .core.api import (
     get_documentation,
     get_formatted_code,
     get_diagnostic,
-    get_godoc_documentation,
 )
 
 from .core.sublime_text import (
@@ -179,6 +178,9 @@ class Event(sublime_plugin.ViewEventListener):
         self.completions = None
         self.context_pos = 0
 
+        self.last_documentation_pos = -1
+        self.last_documentation_string = None
+
     @process_lock
     def completion_thread(self, view: sublime.View):
         with COMPLETION_LOCK:
@@ -260,40 +262,33 @@ class Event(sublime_plugin.ViewEventListener):
                 view.run_command("hide_auto_complete")
 
     @process_lock
-    def get_godoc_thread(self, methodOrField):
-        view = self.view
-        view.update_popup(self.popup_content + "<br>loading . . .<br>")
-
-        workdir = os.path.dirname(view.file_name())
-        content = get_godoc_documentation(methodOrField, workdir)
-
-        if content:
-            show_popup(
-                view, content=content, location=self.popup_location,
-            )
-        else:
-            view.update_popup(self.popup_content)
-
-    def get_godoc_documentation(self, methodOrField):
-        thread = threading.Thread(target=self.get_godoc_thread, args=(methodOrField,))
-        thread.start()
-
-    @process_lock
     def get_documentation(self, view: sublime.View, location: int):
-        end = view.word(location).b
+        offset = view.word(location).a
         source = view.substr(sublime.Region(0, view.size()))
         file_path = view.file_name()
 
-        documentation = get_documentation(source, file_path, end)
-        self.popup_location = location
-        self.popup_content = documentation
+        popup_location = location
+        popup_content = ""
 
-        if documentation:
+        if offset == self.last_documentation_pos:
+            popup_content = self.last_documentation_string
+
+        else:
+            documentation = get_documentation(source, file_path, offset)
+            popup_content = documentation
+            self.last_documentation_pos = offset
+            self.last_documentation_string = documentation
+
+        def open_file(file_name):
+            view.window().open_file(file_name, sublime.ENCODED_POSITION)
+
+        if popup_content:
+
             show_popup(
                 view,
-                content=self.popup_content,
-                location=self.popup_location,
-                on_navigate=self.get_godoc_documentation,
+                content=popup_content,
+                location=popup_location,
+                on_navigate=open_file,
             )
 
     def on_hover(self, point: int, hover_zone: int):
