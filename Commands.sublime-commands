@@ -2,4 +2,6 @@
 	{ "caption": "GoTools: Format Document", "command": "gotools_format" },
 	{ "caption": "GoTools: Vet Package", "command": "gotools_vet" },
 	{ "caption": "GoTools: Vet Document", "command": "gotools_vet_file" },
+
+	{ "caption": "GoTools: Install/Update Tools", "command": "gotools_update_tools" },
 ]
