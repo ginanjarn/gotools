@@ -1,6 +1,14 @@
 # GOTOOLS
 Sublime Text plugin fo golang.
 
-## Summary
-I write this plugin due to works with golang but use low performance processor. I have try use `vscode-go` but my computer getting lag.
-For completion and on hover signature use `gocode`. Then the detail documentation use  `go doc`.
+## Requirements
+* **SublimeText 4** (on ST3 completion maybe not working)
+* **Golang >1.13** (tested on `go 1.17`)
+
+## Commands
+|No|Command|Usage|
+|--|-------|-----|
+| 1 |GoTools: Format Document|format document|
+| 2 |GoTools: Vet Package|vet package|
+| 3 |GoTools: Vet Document|vet document|
+| 4 |GoTools: Install/Update Tools|install/update tools|
