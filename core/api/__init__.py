@@ -3,9 +3,11 @@
 
 from collections import namedtuple
 from html import escape
+from io import StringIO
 import itertools
 import logging
 import os
+import json
 import re
 import subprocess
 
@@ -27,10 +29,21 @@ class Gocode:
         for line in raw.splitlines():
             yield GocodeResult(*line.split(",,"))
 
-    def gocode_exec(self, source: str, file_path: str, location: int):
+    def gocode_exec(self, source: str, file_path: str, location: int, ignore_case=True):
 
-        command = ["gocode", "-f=csv", "autocomplete", file_path, "c%s" % location]
-        env = os.environ.copy()
+        command = [
+            "gocode",
+            "-builtin",
+            "-f=csv",
+            "autocomplete",
+            file_path,
+            "c%s" % location,
+        ]
+
+        if ignore_case:
+            command.insert(1, "-ignore-case")
+
+        env = os.environ
         workdir = os.path.dirname(file_path)
 
         if os.name == "nt":
@@ -91,51 +104,6 @@ class Gocode:
         GocodeResult("keyword", "var", "", ""),
     )
 
-    builtin_results = (
-        GocodeResult("const", "true", "", "builtin"),
-        GocodeResult("const", "iota", "", "builtin"),
-        GocodeResult("func", "close", "func(c chan<- Type)", "builtin"),
-        GocodeResult("func", "delete", "func(m map[Type]Type1, key Type)", "builtin"),
-        GocodeResult("func", "panic", "func(v interface{})", "builtin"),
-        GocodeResult("func", "print", "func(args ...Type)", "builtin"),
-        GocodeResult("func", "println", "func(args ...Type)", "builtin"),
-        GocodeResult("func", "recover", "func() interface{}", "builtin"),
-        GocodeResult("func", "cap", "func(v Type) int", "builtin"),
-        GocodeResult("func", "copy", "func(dst, src []Type) int", "builtin"),
-        GocodeResult("func", "len", "func(v Type) int", "builtin"),
-        GocodeResult("func", "complex", "func(r, i FloatType) ComplexType", "builtin"),
-        GocodeResult("func", "imag", "func(c ComplexType) FloatType", "builtin"),
-        GocodeResult("func", "real", "func(c ComplexType) FloatType", "builtin"),
-        GocodeResult("var", "nil", "", "builtin"),
-        GocodeResult(
-            "func", "append", "func(slice []Type, elems ...Type) []Type", "builtin"
-        ),
-        GocodeResult(
-            "func", "make", "func(t Type, size ...IntegerType) Type", "builtin"
-        ),
-        GocodeResult("func", "new", "func(Type) *Type", "builtin"),
-        GocodeResult("type", "bool", "", "builtin"),
-        GocodeResult("type", "byte", "", "builtin"),
-        GocodeResult("type", "complex128", "", "builtin"),
-        GocodeResult("type", "complex64", "", "builtin"),
-        GocodeResult("type", "error", "", "builtin"),
-        GocodeResult("type", "float32", "", "builtin"),
-        GocodeResult("type", "float64", "", "builtin"),
-        GocodeResult("type", "int", "", "builtin"),
-        GocodeResult("type", "int16", "", "builtin"),
-        GocodeResult("type", "int32", "", "builtin"),
-        GocodeResult("type", "int64", "", "builtin"),
-        GocodeResult("type", "int8", "", "builtin"),
-        GocodeResult("type", "rune", "", "builtin"),
-        GocodeResult("type", "string", "", "builtin"),
-        GocodeResult("type", "uint", "", "builtin"),
-        GocodeResult("type", "uint16", "", "builtin"),
-        GocodeResult("type", "uint32", "", "builtin"),
-        GocodeResult("type", "uint64", "", "builtin"),
-        GocodeResult("type", "uint8", "", "builtin"),
-        GocodeResult("type", "uintptr", "", "builtin"),
-    )
-
     def __init__(self, source: str, file_path: str):
         self.source = source
         self.file_path = file_path
@@ -143,7 +111,8 @@ class Gocode:
     def complete(self, offset: int):
         *_, last_line = self.source[:offset].splitlines()
 
-        if re.match(r"(?:.*)(\w+)(?:\.\w*)$", last_line):
+        # access member
+        if re.search(r"\w+[\w\)\]]?\.\w*$", last_line):
             yield from self.gocode_exec(
                 self.source, file_path=self.file_path, location=offset,
             )
@@ -152,106 +121,26 @@ class Gocode:
         candidates = itertools.chain(
             self.gocode_exec(self.source, file_path=self.file_path, location=offset),
             self.keywords,
-            self.builtin_results,
         )
-
-        if re.match(
-            r"(?:.*func.*)([\(\,]\s*\w+\s+\w*)?(\)(?:\s*\w*\s*\,*)*)$", last_line,
-        ):
-            for completion in candidates:
-                if completion.type_ == "type":
-                    yield completion
-
-            return
 
         yield from candidates
 
-    def get_documentation(self, offset: int):
 
-        candidates = itertools.chain(
-            self.gocode_exec(self.source, file_path=self.file_path, location=offset),
-            self.keywords,
-            self.builtin_results,
-        )
+class Gogetdoc:
+    """get documentation from gogetdoc"""
 
-        *_, last_line = self.source[:offset].splitlines()
+    def gogetdoc_exec(self, source: str, file_path: str, location: int):
 
-        match = re.match(r"func\s+(\w+)\.*$", last_line,)
-        if match:
-            return None
+        pos = "%s:#%d" % (file_path, location)
+        source_encoded = source.encode("utf8")
+        guru_archive = "%s\n%s\n%s" % (file_path, len(source_encoded), source)
 
-        match = re.match(
-            r".*[\/\\\(\)\"\'\-\:\,\.\;\<\>\~\!\@\#\$\%\^\&\*\|\+\=\[\]\{\}\`\~\?](\w+)$",
-            last_line,
-        )
-        if match:
-            name = match.group(1)
+        command = ["gogetdoc", "-modified", "-json", "-pos", pos]
+        env = os.environ
+        workdir = os.path.dirname(file_path)
 
-        else:
-            *_, last_word = last_line.split()
-            name = last_word
-
-        for candidate in candidates:
-            if candidate.name == name:
-                return candidate
-
-
-class Documentation:
-    def __init__(self, doc: str, *, package: str = "", methodOrField: str = ""):
-        self.documentation = doc
-        self.pkg_methodOrField = "%s%s" % (
-            package,
-            "" if not methodOrField else "%s" % methodOrField,
-        )
-
-    def to_html(self):
-        if not self.documentation:
-            return ""
-
-        return "<div style='border: 0.5em;display: block'>{doc}<br><a href='{link}'>More...</a></div>".format(
-            doc=self.documentation, link=self.pkg_methodOrField,
-        )
-
-    @classmethod
-    def from_gocoderesult(cls, gocode_result):
-
-        logger.debug(gocode_result)
-        if not gocode_result:
-            return cls(doc="")
-
-        if (gocode_result.name == "main") or (gocode_result.data == "invalid type"):
-            return cls(doc="")
-
-        if gocode_result.type_ == "package":
-            doc = "package <strong>%s</strong>" % (gocode_result.name)
-            return cls(doc, package=gocode_result.name)
-
-        package = "%s." % gocode_result.package if gocode_result.package else ""
-
-        if gocode_result.type_ == "func":
-            doc = "<i>%s</i><strong>%s</strong>%s" % (
-                package,
-                gocode_result.name,
-                gocode_result.data[4:],
-            )
-            return cls(doc, package=package, methodOrField=gocode_result.name)
-
-        doc = "<i>%s</i><strong>%s</strong> %s" % (
-            package,
-            gocode_result.name,
-            gocode_result.data,
-        )
-        return cls(doc, package=package, methodOrField=gocode_result.name)
-
-
-class Godoc:
-    """get documentation from godoc"""
-
-    @staticmethod
-    def get_godoc(methodOrField: str, workdir: str):
-
-        command = ["go", "doc", methodOrField]
-        env = os.environ.copy()
+        logger.debug("cmd:%s", command)
+        logger.debug("dirname:%s", workdir)
 
         if os.name == "nt":
             # STARTUPINFO only available on windows
@@ -271,54 +160,119 @@ class Godoc:
                 env=env,
                 cwd=workdir,
             )
-            sout, serr = process.communicate()
+            sout, serr = process.communicate(guru_archive.encode("utf8"))
             if serr:
                 logger.debug(
-                    "go doc error:\n%s" % ("\n".join(serr.decode().splitlines()))
+                    "gogetdoc error:\n%s" % ("\n".join(serr.decode().splitlines()))
                 )
                 return ""
-
+            logger.debug(sout.decode())
             return sout.decode("utf8")
 
         except OSError as err:
             logger.error(err)
 
-    def __init__(self, methodOrField: str, workdir: str):
-        self.documentation = self.get_godoc(methodOrField, workdir)
+    def __init__(self, source: str, file_path: str):
+        self.source = source
+        self.file_path = file_path
+
+    def get_documentation(self, offset: int):
+        return self.gogetdoc_exec(self.source, self.file_path, offset)
+
+
+class Documentation:
+    def __init__(self, doc: str):
+        self.documentation = doc
 
     def to_html(self):
         if not self.documentation:
             return ""
 
-        html_escaped = escape(self.documentation)
-        tab_expanded = html_escaped.expandtabs(4)
-        space_replaced = tab_expanded.replace(" ", "&nbsp;")  # non-breakable space
-        paragraph_wrapped = "".join(
-            ("<p>%s</p>" % lines for lines in space_replaced.split("\n\n"))
+        return "<div style='border: 0.5em;display: block'>{doc}</div>".format(
+            doc=self.documentation,
         )
-        break_lines = "<br>".join(paragraph_wrapped.splitlines())
-        return "<div style='border: 0.5em;display: block'>%s</div>" % break_lines
+
+    @staticmethod
+    def translate_space(src: str) -> str:
+        return (
+            src.replace("\t", "&nbsp;&nbsp;")
+            .replace("  ", "&nbsp;&nbsp;")
+            .replace("\n", "<br>")
+        )
+
+    @classmethod
+    def from_gogetdocresult(cls, doc_result):
+
+        # {
+        #   "name": "RuneCountInString",
+        #   "import": "unicode/utf8",
+        #   "pkg": "utf8",
+        #   "decl": "func RuneCountInString(s string) (n int)",
+        #   "doc": "RuneCountInString is like RuneCount but its input is a string.\n",
+        #   "pos": "/usr/local/Cellar/go/1.9/libexec/src/unicode/utf8/utf8.go:412:6"
+        # }
+
+        doc_body = StringIO()
+        link = ""
+
+        try:
+            doc_map = json.loads(doc_result)
+
+            doc_import = doc_map.get("import", "")
+            doc_signature = doc_map.get("decl", "")
+            doc_string = doc_map.get("doc", "")
+            link = doc_map.get("pos", "")
+
+            if doc_import:
+                doc_body.write(
+                    "<em>package: <strong>%s</strong></em>" % escape(doc_import)
+                )
+
+            if doc_signature:
+                doc_body.write(
+                    "<p><strong>%s</strong></p>"
+                    % cls.translate_space(escape(doc_signature))
+                )
+
+            if doc_string:
+                doc_body.write("<p>%s</p>" % cls.translate_space(escape(doc_string)))
+
+            if link:
+                doc_body.write("<a href='%s'>Go to definition</a>" % escape(link))
+
+        except json.JSONDecodeError:
+            pass
+
+        finally:
+            logger.debug(doc_body.getvalue())
+            return cls(doc=doc_body.getvalue())
 
 
 def get_completion(source: str, file_path: str, location: int):
     gocode = Gocode(source, file_path)
-    yield from gocode.complete(location)
+    completions = tuple(gocode.complete(location))
+    return completions
 
 
 def get_documentation(source: str, file_path: str, location: int):
-    gocode = Gocode(source, file_path)
-    return Documentation.from_gocoderesult(gocode.get_documentation(location)).to_html()
+    gogetdoc = Gogetdoc(source, file_path)
+    return Documentation.from_gogetdocresult(
+        gogetdoc.get_documentation(location)
+    ).to_html()
 
 
-def get_godoc_documentation(methodOrField: str, workdir: str):
-    godoc = Godoc(methodOrField, workdir)
-    return godoc.to_html()
+def get_formatted_code(source: str, file_path: str):
 
-
-def get_formatted_code(source: str):
-
+    # default use gofmt
     command = ["gofmt"]
     env = os.environ.copy()
+    workdir = os.path.dirname(file_path)
+
+    # use goimports if available
+    gopath = env.get("GOPATH")
+    executable = "goimports.exe" if os.name == "nt" else "goimports"
+    if os.path.isfile(os.path.join(gopath, "bin", executable)):
+        command = ["goimports"]
 
     if os.name == "nt":
         # STARTUPINFO only available on windows
@@ -336,7 +290,7 @@ def get_formatted_code(source: str):
             startupinfo=startupinfo,
             shell=True,
             env=env,
-            # cwd=workdir,
+            cwd=workdir,
         )
         sout, serr = process.communicate(source.encode("utf8"))
         if serr:
