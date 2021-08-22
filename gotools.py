@@ -12,7 +12,6 @@ from functools import wraps
 import difflib
 import itertools
 import os
-import re
 import threading
 
 import sublime, sublime_plugin
@@ -103,32 +102,6 @@ class Completion:
         completions.sort(key=lambda c: c.trigger)
         # logger.debug(completions)
         return cls(completions)
-
-
-class CompletionContextMatcher:
-    """context matcher"""
-
-    def __init__(self, completions):
-        self.completions = completions
-
-    def _filter_type(self):
-        yield from (
-            completion for completion in self.completions if completion.type_ == "type"
-        )
-
-    def _filter_package(self, name: str):
-        yield from (
-            completion for completion in self.completions if completion.package == name
-        )
-
-    def get_matched(self, line_str: str):
-        logger.debug("to match: %s", line_str)
-
-        matched = re.match(r".*(?:var|const)(?:\s+\w+)(\s*\w*)$", line_str)
-        if matched:
-            return tuple(self._filter_type())
-
-        return self.completions
 
 
 class CompletionsCacheItem:
@@ -235,10 +208,6 @@ class Event(sublime_plugin.ViewEventListener):
     def __init__(self, view: sublime.View):
         self.view = view
         self.completions = None
-        self.context_pos = 0
-
-        self.last_documentation_pos = -1
-        self.last_documentation_string = None
 
     @process_lock
     def completion_thread(self, view: sublime.View):
@@ -255,12 +224,6 @@ class Event(sublime_plugin.ViewEventListener):
             else:
                 raw_completions = get_completion(source, file_path, location)
                 COMPLETIONS_CACHE.set(file_path, source[:location], raw_completions)
-
-            line_region = view.line(location)
-            line_str = view.substr(sublime.Region(line_region.a, location))
-
-            cm = CompletionContextMatcher(raw_completions)
-            raw_completions = cm.get_matched(line_str)
 
             completion = Completion.from_gocoderesult(raw_completions)
             self.completions = completion.to_sublime()
@@ -280,18 +243,6 @@ class Event(sublime_plugin.ViewEventListener):
         if COMPLETION_LOCK.locked():
             self.view.run_command("hide_auto_complete")
             return None
-
-        context_pos = 0
-        if str.isidentifier(prefix):
-            context_pos = self.view.word(locations[0]).a
-        else:
-            context_pos = locations[0]
-
-        if self.context_pos != context_pos:
-            self.completions = None
-            self.view.run_command("hide_auto_complete")
-
-        self.context_pos = context_pos
 
         if self.completions:
             completions = self.completions
