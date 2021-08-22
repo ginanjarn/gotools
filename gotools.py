@@ -173,9 +173,13 @@ class Cache:
         if not self.data:
             return None
 
-        for c in self.data:
+        index = len(self.data) - 1
+        while index > -1:
+            c = self.data[index]
             if c.source_path == path and c.source == source:
                 return c.data
+
+            index -= 1
 
         # if no result available
         return None
