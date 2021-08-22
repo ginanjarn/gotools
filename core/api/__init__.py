@@ -250,7 +250,8 @@ class Documentation:
 
 def get_completion(source: str, file_path: str, location: int):
     gocode = Gocode(source, file_path)
-    yield from gocode.complete(location)
+    completions = tuple(gocode.complete(location))
+    return completions
 
 
 def get_documentation(source: str, file_path: str, location: int):

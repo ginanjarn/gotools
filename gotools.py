@@ -10,6 +10,7 @@ logger.addHandler(sh)
 
 from functools import wraps
 import difflib
+import itertools
 import os
 import re
 import threading
@@ -100,7 +101,7 @@ class Completion:
                 )
             )
         completions.sort(key=lambda c: c.trigger)
-        logger.debug(completions)
+        # logger.debug(completions)
         return cls(completions)
 
 
@@ -128,6 +129,60 @@ class CompletionContextMatcher:
             return tuple(self._filter_type())
 
         return self.completions
+
+
+class CompletionsCacheItem:
+    def __init__(self, path, source, completions):
+        self.source_path = path
+        self.source = source
+        self._completions = completions
+
+    @property
+    def data(self):
+        if not self._completions:
+            return ()
+        return self._completions
+
+
+class DocumentationCacheItem:
+    def __init__(self, path, source, documentation):
+        self.source_path = path
+        self.source = source
+        self._documentation = documentation
+
+    @property
+    def data(self):
+        if not self._documentation:
+            return ""
+        return self._documentation
+
+
+class Cache:
+    def __init__(self, item_class, *, max_cache=50):
+        self.item_class = item_class
+        self.max_cache = max_cache
+        self.data = ()
+
+    def set(self, path, source, data):
+        item = self.item_class(path, source, data)
+        self.data = tuple(itertools.chain(self.data[: self.max_cache], (item,)))
+
+    def get(self, path, source):
+
+        logger.debug("cached = : %s", len(self.data))
+        if not self.data:
+            return None
+
+        for c in self.data:
+            if c.source_path == path and c.source == source:
+                return c.data
+
+        # if no result available
+        return None
+
+
+COMPLETIONS_CACHE = Cache(CompletionsCacheItem, max_cache=25)
+DOCUMENTATION_CACHE = Cache(DocumentationCacheItem)
 
 
 def valid_source(view: sublime.View, location: int = 0) -> bool:
@@ -188,7 +243,14 @@ class Event(sublime_plugin.ViewEventListener):
             location = view.sel()[0].a
             file_path = view.file_name()
 
-            raw_completions = get_completion(source, file_path, location)
+            cached = COMPLETIONS_CACHE.get(file_path, source[:location])
+            if cached:
+                logger.debug("using cached")
+                raw_completions = cached
+
+            else:
+                raw_completions = get_completion(source, file_path, location)
+                COMPLETIONS_CACHE.set(file_path, source[:location], raw_completions)
 
             line_region = view.line(location)
             line_str = view.substr(sublime.Region(line_region.a, location))
@@ -263,21 +325,23 @@ class Event(sublime_plugin.ViewEventListener):
 
     @process_lock
     def get_documentation(self, view: sublime.View, location: int):
-        offset = view.word(location).a
+        sel_word = view.word(location)
+        offset = sel_word.a
         source = view.substr(sublime.Region(0, view.size()))
         file_path = view.file_name()
 
         popup_location = location
         popup_content = ""
 
-        if offset == self.last_documentation_pos:
-            popup_content = self.last_documentation_string
+        cached = DOCUMENTATION_CACHE.get(file_path, source[: sel_word.b])
+        if cached:
+            logger.debug("using cached")
+            popup_content = cached
 
         else:
             documentation = get_documentation(source, file_path, offset)
+            DOCUMENTATION_CACHE.set(file_path, source[: sel_word.b], documentation)
             popup_content = documentation
-            self.last_documentation_pos = offset
-            self.last_documentation_string = documentation
 
         def open_file(file_name):
             view.window().open_file(file_name, sublime.ENCODED_POSITION)
