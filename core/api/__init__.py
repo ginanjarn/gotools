@@ -3,9 +3,11 @@
 
 from collections import namedtuple
 from html import escape
+from io import StringIO
 import itertools
 import logging
 import os
+import json
 import re
 import subprocess
 
@@ -109,7 +111,8 @@ class Gocode:
     def complete(self, offset: int):
         *_, last_line = self.source[:offset].splitlines()
 
-        if re.match(r"(?:.*)(\w+)(?:\.\w*)$", last_line):
+        # access member
+        if re.search(r"\w+[\w\)\]]?\.\w*$", last_line):
             yield from self.gocode_exec(
                 self.source, file_path=self.file_path, location=offset,
             )
@@ -120,110 +123,24 @@ class Gocode:
             self.keywords,
         )
 
-        if re.match(
-            r"(?:.*func.*)([\(\,]\s*\w+\s+\w*)?(\)(?:\s*\w*\s*\,*)*)$", last_line,
-        ):
-            for completion in candidates:
-                if completion.type_ == "type":
-                    yield completion
-
-            return
-
         yield from candidates
 
-    def get_documentation(self, offset: int):
 
-        candidates = itertools.chain(
-            self.gocode_exec(
-                self.source,
-                file_path=self.file_path,
-                location=offset,
-                ignore_case=False,
-            ),
-            self.keywords,
-        )
+class Gogetdoc:
+    """get documentation from gogetdoc"""
 
-        *_, last_line = self.source[:offset].splitlines()
+    def gogetdoc_exec(self, source: str, file_path: str, location: int):
 
-        match = re.match(r"func\s+(\w+)\.*$", last_line,)
-        if match:
-            return None
+        pos = "%s:#%d" % (file_path, location)
+        source_encoded = source.encode("utf8")
+        guru_archive = "%s\n%s\n%s" % (file_path, len(source_encoded), source)
 
-        match = re.match(
-            r".*[\/\\\(\)\"\'\-\:\,\.\;\<\>\~\!\@\#\$\%\^\&\*\|\+\=\[\]\{\}\`\~\?](\w+)$",
-            last_line,
-        )
-        if match:
-            name = match.group(1)
-
-        else:
-            *_, last_word = last_line.split()
-            name = last_word
-
-        for candidate in candidates:
-            if candidate.name == name:
-                return candidate
-
-
-class Documentation:
-    def __init__(self, doc: str, *, package: str = "", methodOrField: str = ""):
-        self.documentation = doc
-        self.pkg_methodOrField = ".".join([package, methodOrField])
-
-    def to_html(self):
-        if not self.documentation:
-            return ""
-
-        return "<div style='border: 0.5em;display: block'>{doc}<a href='{link}'>More...</a></div>".format(
-            doc=self.documentation, link=self.pkg_methodOrField,
-        )
-
-    @classmethod
-    def from_gocoderesult(cls, gocode_result):
-
-        logger.debug(gocode_result)
-
-        if not gocode_result:
-            return cls(doc="")
-
-        if (gocode_result.name == "main") or (gocode_result.data == "invalid type"):
-            return cls(doc="")
-
-        package = gocode_result.package if gocode_result.package else ""
-
-        if gocode_result.type_ == "package":
-            package = gocode_result.name
-
-        package_str = "package: <strong>%s</strong>" % package if package else ""
-
-        if gocode_result.type_ == "package":
-            doc = "<p>%s</p>" % (package_str)
-            return cls(doc, package=package)
-
-        annotation = (
-            escape(gocode_result.data[4:])
-            if gocode_result.type_ == "func"
-            else gocode_result.data
-        )
-
-        doc = "<em>%s</em><p><strong>%s</strong> %s</p>" % (
-            package_str,
-            gocode_result.name,
-            annotation,
-        )
-        return cls(doc, package=package, methodOrField=gocode_result.name)
-
-
-class Godoc:
-    """get documentation from godoc"""
-
-    @staticmethod
-    def get_godoc(methodOrField: str, workdir: str):
-
-        command = ["go", "doc", methodOrField]
-        logger.debug(command)
-
+        command = ["gogetdoc", "-modified", "-json", "-pos", pos]
         env = os.environ
+        workdir = os.path.dirname(file_path)
+
+        logger.debug("cmd:%s", command)
+        logger.debug("dirname:%s", workdir)
 
         if os.name == "nt":
             # STARTUPINFO only available on windows
@@ -243,70 +160,119 @@ class Godoc:
                 env=env,
                 cwd=workdir,
             )
-            sout, serr = process.communicate()
+            sout, serr = process.communicate(guru_archive.encode("utf8"))
             if serr:
                 logger.debug(
-                    "go doc error:\n%s" % ("\n".join(serr.decode().splitlines()))
+                    "gogetdoc error:\n%s" % ("\n".join(serr.decode().splitlines()))
                 )
                 return ""
-
+            logger.debug(sout.decode())
             return sout.decode("utf8")
 
         except OSError as err:
             logger.error(err)
 
-    def __init__(self, methodOrField: str, workdir: str):
+    def __init__(self, source: str, file_path: str):
+        self.source = source
+        self.file_path = file_path
 
-        pkg, identifier = methodOrField.split(".")
+    def get_documentation(self, offset: int):
+        return self.gogetdoc_exec(self.source, self.file_path, offset)
 
-        if (not pkg) and (not str.istitle(identifier)):
-            # this case for local not exported method or field
-            self.documentation = ""
 
-        elif not pkg:
-            # this case for local exported method of field
-            self.documentation = self.get_godoc(identifier, workdir)
-
-        elif not identifier:
-            # this case for package without identifier
-            self.documentation = self.get_godoc(pkg, workdir)
-
-        else:
-            self.documentation = self.get_godoc(methodOrField, workdir)
+class Documentation:
+    def __init__(self, doc: str):
+        self.documentation = doc
 
     def to_html(self):
         if not self.documentation:
             return ""
 
-        html_escaped = escape(self.documentation)
-        tab_expanded = html_escaped.expandtabs(4)
-        space_replaced = tab_expanded.replace(" ", "&nbsp;")  # non-breakable space
-        paragraph_wrapped = "".join(
-            ("<p>%s</p>" % lines for lines in space_replaced.split("\n\n"))
+        return "<div style='border: 0.5em;display: block'>{doc}</div>".format(
+            doc=self.documentation,
         )
-        break_lines = "<br>".join(paragraph_wrapped.splitlines())
-        return "<div style='border: 0.5em;display: block'>%s</div>" % break_lines
+
+    @staticmethod
+    def translate_space(src: str) -> str:
+        return (
+            src.replace("\t", "&nbsp;&nbsp;")
+            .replace("  ", "&nbsp;&nbsp;")
+            .replace("\n", "<br>")
+        )
+
+    @classmethod
+    def from_gogetdocresult(cls, doc_result):
+
+        # {
+        #   "name": "RuneCountInString",
+        #   "import": "unicode/utf8",
+        #   "pkg": "utf8",
+        #   "decl": "func RuneCountInString(s string) (n int)",
+        #   "doc": "RuneCountInString is like RuneCount but its input is a string.\n",
+        #   "pos": "/usr/local/Cellar/go/1.9/libexec/src/unicode/utf8/utf8.go:412:6"
+        # }
+
+        doc_body = StringIO()
+        link = ""
+
+        try:
+            doc_map = json.loads(doc_result)
+
+            doc_import = doc_map.get("import", "")
+            doc_signature = doc_map.get("decl", "")
+            doc_string = doc_map.get("doc", "")
+            link = doc_map.get("pos", "")
+
+            if doc_import:
+                doc_body.write(
+                    "<em>package: <strong>%s</strong></em>" % escape(doc_import)
+                )
+
+            if doc_signature:
+                doc_body.write(
+                    "<p><strong>%s</strong></p>"
+                    % cls.translate_space(escape(doc_signature))
+                )
+
+            if doc_string:
+                doc_body.write("<p>%s</p>" % cls.translate_space(escape(doc_string)))
+
+            if link:
+                doc_body.write("<a href='%s'>Go to definition</a>" % escape(link))
+
+        except json.JSONDecodeError:
+            pass
+
+        finally:
+            logger.debug(doc_body.getvalue())
+            return cls(doc=doc_body.getvalue())
 
 
 def get_completion(source: str, file_path: str, location: int):
     gocode = Gocode(source, file_path)
-    yield from gocode.complete(location)
+    completions = tuple(gocode.complete(location))
+    return completions
 
 
 def get_documentation(source: str, file_path: str, location: int):
-    gocode = Gocode(source, file_path)
-    return Documentation.from_gocoderesult(gocode.get_documentation(location)).to_html()
+    gogetdoc = Gogetdoc(source, file_path)
+    return Documentation.from_gogetdocresult(
+        gogetdoc.get_documentation(location)
+    ).to_html()
 
 
-def get_godoc_documentation(methodOrField: str, workdir: str):
-    godoc = Godoc(methodOrField, workdir)
-    return godoc.to_html()
+def get_formatted_code(source: str, file_path: str):
 
-
-def get_formatted_code(source: str):
-
+    # default use gofmt
     command = ["gofmt"]
     env = os.environ.copy()
+    workdir = os.path.dirname(file_path)
+
+    # use goimports if available
+    gopath = env.get("GOPATH")
+    executable = "goimports.exe" if os.name == "nt" else "goimports"
+    if os.path.isfile(os.path.join(gopath, "bin", executable)):
+        command = ["goimports"]
 
     if os.name == "nt":
         # STARTUPINFO only available on windows
@@ -324,7 +290,7 @@ def get_formatted_code(source: str):
             startupinfo=startupinfo,
             shell=True,
             env=env,
-            # cwd=workdir,
+            cwd=workdir,
         )
         sout, serr = process.communicate(source.encode("utf8"))
         if serr:

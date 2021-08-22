@@ -10,6 +10,7 @@ logger.addHandler(sh)
 
 from functools import wraps
 import difflib
+import itertools
 import os
 import re
 import threading
@@ -22,7 +23,6 @@ from .core.api import (
     get_documentation,
     get_formatted_code,
     get_diagnostic,
-    get_godoc_documentation,
 )
 
 from .core.sublime_text import (
@@ -44,8 +44,14 @@ def process_lock(func):
         if PROCESS_LOCK.locked():
             return None
 
+        status_key = "gotools"
+        value = "BUSY"
+        view = sublime.active_window().active_view()
+        view.set_status(status_key, value)
         with PROCESS_LOCK:
-            return func(*args, **kwargs)
+            function = func(*args, **kwargs)
+            view.erase_status(status_key)
+            return function
 
     return wrapper
 
@@ -95,7 +101,7 @@ class Completion:
                 )
             )
         completions.sort(key=lambda c: c.trigger)
-        logger.debug(completions)
+        # logger.debug(completions)
         return cls(completions)
 
 
@@ -123,6 +129,60 @@ class CompletionContextMatcher:
             return tuple(self._filter_type())
 
         return self.completions
+
+
+class CompletionsCacheItem:
+    def __init__(self, path, source, completions):
+        self.source_path = path
+        self.source = source
+        self._completions = completions
+
+    @property
+    def data(self):
+        if not self._completions:
+            return ()
+        return self._completions
+
+
+class DocumentationCacheItem:
+    def __init__(self, path, source, documentation):
+        self.source_path = path
+        self.source = source
+        self._documentation = documentation
+
+    @property
+    def data(self):
+        if not self._documentation:
+            return ""
+        return self._documentation
+
+
+class Cache:
+    def __init__(self, item_class, *, max_cache=50):
+        self.item_class = item_class
+        self.max_cache = max_cache
+        self.data = ()
+
+    def set(self, path, source, data):
+        item = self.item_class(path, source, data)
+        self.data = tuple(itertools.chain(self.data[: self.max_cache], (item,)))
+
+    def get(self, path, source):
+
+        logger.debug("cached = : %s", len(self.data))
+        if not self.data:
+            return None
+
+        for c in self.data:
+            if c.source_path == path and c.source == source:
+                return c.data
+
+        # if no result available
+        return None
+
+
+COMPLETIONS_CACHE = Cache(CompletionsCacheItem, max_cache=25)
+DOCUMENTATION_CACHE = Cache(DocumentationCacheItem)
 
 
 def valid_source(view: sublime.View, location: int = 0) -> bool:
@@ -173,6 +233,9 @@ class Event(sublime_plugin.ViewEventListener):
         self.completions = None
         self.context_pos = 0
 
+        self.last_documentation_pos = -1
+        self.last_documentation_string = None
+
     @process_lock
     def completion_thread(self, view: sublime.View):
         with COMPLETION_LOCK:
@@ -180,7 +243,14 @@ class Event(sublime_plugin.ViewEventListener):
             location = view.sel()[0].a
             file_path = view.file_name()
 
-            raw_completions = get_completion(source, file_path, location)
+            cached = COMPLETIONS_CACHE.get(file_path, source[:location])
+            if cached:
+                logger.debug("using cached")
+                raw_completions = cached
+
+            else:
+                raw_completions = get_completion(source, file_path, location)
+                COMPLETIONS_CACHE.set(file_path, source[:location], raw_completions)
 
             line_region = view.line(location)
             line_str = view.substr(sublime.Region(line_region.a, location))
@@ -254,40 +324,35 @@ class Event(sublime_plugin.ViewEventListener):
                 view.run_command("hide_auto_complete")
 
     @process_lock
-    def get_godoc_thread(self, methodOrField):
-        view = self.view
-        view.update_popup(self.popup_content + "<br>loading . . .<br>")
-
-        workdir = os.path.dirname(view.file_name())
-        content = get_godoc_documentation(methodOrField, workdir)
-
-        if content:
-            show_popup(
-                view, content=content, location=self.popup_location,
-            )
-        else:
-            view.update_popup(self.popup_content)
-
-    def get_godoc_documentation(self, methodOrField):
-        thread = threading.Thread(target=self.get_godoc_thread, args=(methodOrField,))
-        thread.start()
-
-    @process_lock
     def get_documentation(self, view: sublime.View, location: int):
-        end = view.word(location).b
+        sel_word = view.word(location)
+        offset = sel_word.a
         source = view.substr(sublime.Region(0, view.size()))
         file_path = view.file_name()
 
-        documentation = get_documentation(source, file_path, end)
-        self.popup_location = location
-        self.popup_content = documentation
+        popup_location = location
+        popup_content = ""
 
-        if documentation:
+        cached = DOCUMENTATION_CACHE.get(file_path, source[: sel_word.b])
+        if cached:
+            logger.debug("using cached")
+            popup_content = cached
+
+        else:
+            documentation = get_documentation(source, file_path, offset)
+            DOCUMENTATION_CACHE.set(file_path, source[: sel_word.b], documentation)
+            popup_content = documentation
+
+        def open_file(file_name):
+            view.window().open_file(file_name, sublime.ENCODED_POSITION)
+
+        if popup_content:
+
             show_popup(
                 view,
-                content=self.popup_content,
-                location=self.popup_location,
-                on_navigate=self.get_godoc_documentation,
+                content=popup_content,
+                location=popup_location,
+                on_navigate=open_file,
             )
 
     def on_hover(self, point: int, hover_zone: int):
@@ -312,18 +377,21 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
             return
 
         view = self.view
-
         if not valid_source(view):
             return
 
+        self.do_formatting(view, edit)
+
+    @process_lock
+    def do_formatting(self, view, edit):
+
+        file_name = view.file_name()
         source = view.substr(sublime.Region(0, view.size()))
 
         try:
-            formatted = get_formatted_code(source)
+            formatted = get_formatted_code(source, file_name)
 
         except Exception as err:
-            file_name = os.path.basename(view.file_name())
-
             self.show_error_panel(
                 view.window(), str(err).replace("<standard input>", file_name),
             )
@@ -381,10 +449,18 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
         return valid_source(self.view)
 
 
-class GotoolsValidateCommand(sublime_plugin.TextCommand):
-    """document formatter command"""
+class GotoolsVetFileCommand(sublime_plugin.TextCommand):
+    """document vet file command"""
 
     def run(self, edit):
+        view = self.view
+        view.run_command("gotools_vet", {"path": view.file_name()})
+
+
+class GotoolsVetCommand(sublime_plugin.TextCommand):
+    """document vet directory command"""
+
+    def run(self, edit, path=""):
         if not PLUGIN_ENABLED:
             return
 
@@ -393,19 +469,20 @@ class GotoolsValidateCommand(sublime_plugin.TextCommand):
         if not valid_source(view):
             return
 
-        thread = threading.Thread(target=self.diagnostic_thread, args=(view,))
+        if not path:
+            path = os.path.dirname(view.file_name())
+
+        thread = threading.Thread(target=self.diagnostic_thread, args=(view, path))
         thread.start()
 
-    def diagnostic_thread(self, view: sublime.View):
+    @process_lock
+    def diagnostic_thread(self, view: sublime.View, path: str):
 
-        file_name = view.file_name()
-        work_dir = os.path.dirname(file_name)
+        work_dir = path
+        if os.path.isfile(path):
+            work_dir = os.path.dirname(path)
 
-        for folder in view.window().folders():
-            if file_name.startswith(folder):
-                work_dir = folder
-
-        diagnostic = get_diagnostic(view.file_name(), workdir=work_dir)
+        diagnostic = get_diagnostic(path, workdir=work_dir)
         logger.debug(diagnostic)
 
         output_panel = DiagnosticPanel(self.view.window())
