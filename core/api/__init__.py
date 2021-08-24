@@ -109,7 +109,12 @@ class Gocode:
         self.file_path = file_path
 
     def complete(self, offset: int):
-        *_, last_line = self.source[:offset].splitlines()
+        if offset == 0:
+            source = self.source
+        else:
+            source = self.source[:offset]
+
+        *_, last_line = source.splitlines()
 
         # access member
         if re.search(r"\w+[\w\)\]]?\.\w*$", last_line):
