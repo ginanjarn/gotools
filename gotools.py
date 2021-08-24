@@ -216,6 +216,10 @@ class Event(sublime_plugin.ViewEventListener):
             location = view.sel()[0].a
             file_path = view.file_name()
 
+            prefix = view.word(location)
+            if view.substr(prefix).isidentifier():
+                location = prefix.a
+
             cached = COMPLETIONS_CACHE.get(file_path, source[:location])
             if cached:
                 logger.debug("using cached")
