@@ -339,10 +339,12 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
         if not valid_source(view):
             return
 
-        self.do_formatting(view, edit)
+        thread = threading.Thread(target=self.do_formatting, args=(view,))
+        thread.start()
 
     @process_lock
-    def do_formatting(self, view, edit):
+    def do_formatting(self, view):
+        logger.info("formatting thread")
 
         file_name = view.file_name()
         source = view.substr(sublime.Region(0, view.size()))
@@ -362,13 +364,43 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
             if not formatted:
                 return
 
-            self.apply_changes(view, edit, source, formatted)
+            nview = view.window().open_file(file_name)
 
-    def apply_changes(self, view, edit, source, formatted):
+            nview.run_command(
+                "gotools_apply_changes",
+                args={"file_name": file_name, "new_source": formatted},
+            )
+
+    @staticmethod
+    def show_error_panel(window: sublime.Window, message: str):
+        """show error in output panel"""
+
+        output_panel = ErrorPanel(window)
+        output_panel.append(message)
+        output_panel.show()
+
+    def is_visible(self):
+        return valid_source(self.view)
+
+
+class GotoolsApplyChangesCommand(sublime_plugin.TextCommand):
+    """document apply changes command"""
+
+    def run(self, edit, file_name, new_source):
+        logger.debug("new_source:-------\n%s", new_source)
+
+        view = self.view
+        if file_name != self.view.file_name():
+            raise ValueError("unable apply change for %s", file_name)
+
+        old = view.substr(sublime.Region(0, view.size()))
+        self.apply_changes(view, edit, old, new_source)
+
+    def apply_changes(self, view, edit, old, new):
         """apply formatting changes"""
 
         i = 0
-        for line in difflib.ndiff(source.splitlines(), formatted.splitlines()):
+        for line in difflib.ndiff(old.splitlines(), new.splitlines()):
 
             if line.startswith("?"):  # skip hint lines
                 continue
@@ -392,14 +424,6 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
                 i += l
 
     @staticmethod
-    def show_error_panel(window: sublime.Window, message: str):
-        """show error in output panel"""
-
-        output_panel = ErrorPanel(window)
-        output_panel.append(message)
-        output_panel.show()
-
-    @staticmethod
     def diff_sanity_check(a, b):
         if a != b:
             raise Exception("diff sanity check mismatch\n-%s\n+%s" % (a, b))
@@ -414,6 +438,9 @@ class GotoolsVetFileCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         view = self.view
         view.run_command("gotools_vet", {"path": view.file_name()})
+
+    def is_visible(self):
+        return valid_source(self.view)
 
 
 class GotoolsVetCommand(sublime_plugin.TextCommand):
