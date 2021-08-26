@@ -12,6 +12,7 @@ from functools import wraps
 import difflib
 import itertools
 import os
+import queue
 import threading
 
 import sublime, sublime_plugin
@@ -179,6 +180,20 @@ def valid_scope(view: sublime.View, location: int) -> bool:
     return True
 
 
+class CompletionParams:
+    def __init__(self, view: sublime.View):
+
+        self.source = view.substr(sublime.Region(0, view.size()))
+        self.location = view.sel()[0].a
+        self.file_name = view.file_name()
+
+        prefix = view.word(self.location)
+        prefix_str = view.substr(prefix).strip("\n")
+        logger.debug("prefix_str: %s", repr(prefix_str))
+        if prefix_str.isidentifier():
+            self.location = prefix.a
+
+
 PLUGIN_ENABLED = False
 
 
@@ -205,20 +220,19 @@ COMPLETION_LOCK = threading.Lock()
 class Event(sublime_plugin.ViewEventListener):
     """Event handler"""
 
+    completions_queue = queue.Queue(1)
+
     def __init__(self, view: sublime.View):
         self.view = view
-        self.completions = None
+        self.completions_pos = -1
 
     @process_lock
-    def completion_thread(self, view: sublime.View):
+    def completion_thread(self, view: sublime.View, cparams: CompletionParams):
         with COMPLETION_LOCK:
-            source = view.substr(sublime.Region(0, view.size()))
-            location = view.sel()[0].a
-            file_path = view.file_name()
 
-            prefix = view.word(location)
-            if view.substr(prefix).isidentifier():
-                location = prefix.a
+            source = cparams.source
+            location = cparams.location
+            file_path = cparams.file_name
 
             cached = COMPLETIONS_CACHE.get(file_path, source[:location])
             if cached:
@@ -230,7 +244,10 @@ class Event(sublime_plugin.ViewEventListener):
                 COMPLETIONS_CACHE.set(file_path, source[:location], raw_completions)
 
             completion = Completion.from_gocoderesult(raw_completions)
-            self.completions = completion.to_sublime()
+            try:
+                self.completions_queue.put_nowait(completion.to_sublime())
+            except queue.Full:
+                pass
 
         show_completions(view)
 
@@ -248,14 +265,33 @@ class Event(sublime_plugin.ViewEventListener):
             self.view.run_command("hide_auto_complete")
             return None
 
-        if self.completions:
-            completions = self.completions
-            self.completions = None
+        try:
+            completions = self.completions_queue.get_nowait()
+        except queue.Empty:
+            completions = None
+
+        completion_params = CompletionParams(self.view)
+
+        if completions:
+            if completion_params.location != self.completions_pos:
+                logger.debug(
+                    "invalid context: request post = %d, expected = %s",
+                    self.completions_pos,
+                    completion_params.location,
+                )
+                self.view.run_command("hide_auto_complete")
+                return None
+
             return completions
 
-        logger.debug("prefix = '%s'", prefix)
+        self.completions_pos = completion_params.location
 
-        thread = threading.Thread(target=self.completion_thread, args=(self.view,))
+        logger.debug("prefix = '%s'", prefix)
+        logger.debug("request pos = '%d'", self.completions_pos)
+
+        thread = threading.Thread(
+            target=self.completion_thread, args=(self.view, completion_params)
+        )
         thread.start()
         hide_completions(self.view)
         return None
