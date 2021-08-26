@@ -3,7 +3,7 @@
 
 from collections import namedtuple
 from html import escape
-from io import StringIO
+from io import StringIO, BytesIO
 import itertools
 import logging
 import os
@@ -136,9 +136,19 @@ class Gogetdoc:
 
     def gogetdoc_exec(self, source: str, file_path: str, location: int):
 
+        guru_archive = BytesIO()
         pos = "%s:#%d" % (file_path, location)
         source_encoded = source.encode("utf8")
-        guru_archive = "%s\n%s\n%s" % (file_path, len(source_encoded), source)
+        source_len_str = "%d" % len(source_encoded)
+
+        lines = [
+            file_path.encode(),
+            b"\n",
+            source_len_str.encode(),
+            b"\n",
+            source_encoded,
+        ]
+        guru_archive.writelines(lines)
 
         command = ["gogetdoc", "-modified", "-json", "-pos", pos]
         env = os.environ
@@ -165,7 +175,7 @@ class Gogetdoc:
                 env=env,
                 cwd=workdir,
             )
-            sout, serr = process.communicate(guru_archive.encode("utf8"))
+            sout, serr = process.communicate(guru_archive.getvalue())
             if serr:
                 logger.debug(
                     "gogetdoc error:\n%s" % ("\n".join(serr.decode().splitlines()))
