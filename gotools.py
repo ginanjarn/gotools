@@ -12,7 +12,7 @@ from functools import wraps
 import difflib
 import itertools
 import os
-import re
+import queue
 import threading
 
 import sublime, sublime_plugin
@@ -105,32 +105,6 @@ class Completion:
         return cls(completions)
 
 
-class CompletionContextMatcher:
-    """context matcher"""
-
-    def __init__(self, completions):
-        self.completions = completions
-
-    def _filter_type(self):
-        yield from (
-            completion for completion in self.completions if completion.type_ == "type"
-        )
-
-    def _filter_package(self, name: str):
-        yield from (
-            completion for completion in self.completions if completion.package == name
-        )
-
-    def get_matched(self, line_str: str):
-        logger.debug("to match: %s", line_str)
-
-        matched = re.match(r".*(?:var|const)(?:\s+\w+)(\s*\w*)$", line_str)
-        if matched:
-            return tuple(self._filter_type())
-
-        return self.completions
-
-
 class CompletionsCacheItem:
     def __init__(self, path, source, completions):
         self.source_path = path
@@ -173,9 +147,13 @@ class Cache:
         if not self.data:
             return None
 
-        for c in self.data:
+        index = len(self.data) - 1
+        while index > -1:
+            c = self.data[index]
             if c.source_path == path and c.source == source:
                 return c.data
+
+            index -= 1
 
         # if no result available
         return None
@@ -200,6 +178,20 @@ def valid_scope(view: sublime.View, location: int) -> bool:
         return False
 
     return True
+
+
+class CompletionParams:
+    def __init__(self, view: sublime.View):
+
+        self.source = view.substr(sublime.Region(0, view.size()))
+        self.location = view.sel()[0].a
+        self.file_name = view.file_name()
+
+        prefix = view.word(self.location)
+        prefix_str = view.substr(prefix).strip("\n")
+        logger.debug("prefix_str: %s", repr(prefix_str))
+        if prefix_str.isidentifier():
+            self.location = prefix.a
 
 
 PLUGIN_ENABLED = False
@@ -228,20 +220,19 @@ COMPLETION_LOCK = threading.Lock()
 class Event(sublime_plugin.ViewEventListener):
     """Event handler"""
 
+    completions_queue = queue.Queue(1)
+
     def __init__(self, view: sublime.View):
         self.view = view
-        self.completions = None
-        self.context_pos = 0
-
-        self.last_documentation_pos = -1
-        self.last_documentation_string = None
+        self.completions_pos = -1
 
     @process_lock
-    def completion_thread(self, view: sublime.View):
+    def completion_thread(self, view: sublime.View, cparams: CompletionParams):
         with COMPLETION_LOCK:
-            source = view.substr(sublime.Region(0, view.size()))
-            location = view.sel()[0].a
-            file_path = view.file_name()
+
+            source = cparams.source
+            location = cparams.location
+            file_path = cparams.file_name
 
             cached = COMPLETIONS_CACHE.get(file_path, source[:location])
             if cached:
@@ -252,14 +243,11 @@ class Event(sublime_plugin.ViewEventListener):
                 raw_completions = get_completion(source, file_path, location)
                 COMPLETIONS_CACHE.set(file_path, source[:location], raw_completions)
 
-            line_region = view.line(location)
-            line_str = view.substr(sublime.Region(line_region.a, location))
-
-            cm = CompletionContextMatcher(raw_completions)
-            raw_completions = cm.get_matched(line_str)
-
             completion = Completion.from_gocoderesult(raw_completions)
-            self.completions = completion.to_sublime()
+            try:
+                self.completions_queue.put_nowait(completion.to_sublime())
+            except queue.Full:
+                pass
 
         show_completions(view)
 
@@ -277,26 +265,33 @@ class Event(sublime_plugin.ViewEventListener):
             self.view.run_command("hide_auto_complete")
             return None
 
-        context_pos = 0
-        if str.isidentifier(prefix):
-            context_pos = self.view.word(locations[0]).a
-        else:
-            context_pos = locations[0]
+        try:
+            completions = self.completions_queue.get_nowait()
+        except queue.Empty:
+            completions = None
 
-        if self.context_pos != context_pos:
-            self.completions = None
-            self.view.run_command("hide_auto_complete")
+        completion_params = CompletionParams(self.view)
 
-        self.context_pos = context_pos
+        if completions:
+            if completion_params.location != self.completions_pos:
+                logger.debug(
+                    "invalid context: request post = %d, expected = %s",
+                    self.completions_pos,
+                    completion_params.location,
+                )
+                self.view.run_command("hide_auto_complete")
+                return None
 
-        if self.completions:
-            completions = self.completions
-            self.completions = None
             return completions
 
-        logger.debug("prefix = '%s'", prefix)
+        self.completions_pos = completion_params.location
 
-        thread = threading.Thread(target=self.completion_thread, args=(self.view,))
+        logger.debug("prefix = '%s'", prefix)
+        logger.debug("request pos = '%d'", self.completions_pos)
+
+        thread = threading.Thread(
+            target=self.completion_thread, args=(self.view, completion_params)
+        )
         thread.start()
         hide_completions(self.view)
         return None
@@ -380,10 +375,12 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
         if not valid_source(view):
             return
 
-        self.do_formatting(view, edit)
+        thread = threading.Thread(target=self.do_formatting, args=(view,))
+        thread.start()
 
     @process_lock
-    def do_formatting(self, view, edit):
+    def do_formatting(self, view):
+        logger.info("formatting thread")
 
         file_name = view.file_name()
         source = view.substr(sublime.Region(0, view.size()))
@@ -403,13 +400,43 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
             if not formatted:
                 return
 
-            self.apply_changes(view, edit, source, formatted)
+            nview = view.window().open_file(file_name)
 
-    def apply_changes(self, view, edit, source, formatted):
+            nview.run_command(
+                "gotools_apply_changes",
+                args={"file_name": file_name, "new_source": formatted},
+            )
+
+    @staticmethod
+    def show_error_panel(window: sublime.Window, message: str):
+        """show error in output panel"""
+
+        output_panel = ErrorPanel(window)
+        output_panel.append(message)
+        output_panel.show()
+
+    def is_visible(self):
+        return valid_source(self.view)
+
+
+class GotoolsApplyChangesCommand(sublime_plugin.TextCommand):
+    """document apply changes command"""
+
+    def run(self, edit, file_name, new_source):
+        logger.debug("new_source:-------\n%s", new_source)
+
+        view = self.view
+        if file_name != self.view.file_name():
+            raise ValueError("unable apply change for %s", file_name)
+
+        old = view.substr(sublime.Region(0, view.size()))
+        self.apply_changes(view, edit, old, new_source)
+
+    def apply_changes(self, view, edit, old, new):
         """apply formatting changes"""
 
         i = 0
-        for line in difflib.ndiff(source.splitlines(), formatted.splitlines()):
+        for line in difflib.ndiff(old.splitlines(), new.splitlines()):
 
             if line.startswith("?"):  # skip hint lines
                 continue
@@ -433,14 +460,6 @@ class GotoolsFormatCommand(sublime_plugin.TextCommand):
                 i += l
 
     @staticmethod
-    def show_error_panel(window: sublime.Window, message: str):
-        """show error in output panel"""
-
-        output_panel = ErrorPanel(window)
-        output_panel.append(message)
-        output_panel.show()
-
-    @staticmethod
     def diff_sanity_check(a, b):
         if a != b:
             raise Exception("diff sanity check mismatch\n-%s\n+%s" % (a, b))
@@ -455,6 +474,9 @@ class GotoolsVetFileCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         view = self.view
         view.run_command("gotools_vet", {"path": view.file_name()})
+
+    def is_visible(self):
+        return valid_source(self.view)
 
 
 class GotoolsVetCommand(sublime_plugin.TextCommand):
