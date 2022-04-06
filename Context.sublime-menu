@@ -1,0 +1,8 @@
+[
+	{
+		"caption" : "Format Code",
+		"mnemonic" : "F",
+		"id" : "gotools",
+		"command" : "gotools_document_formatting",
+	}
+]
