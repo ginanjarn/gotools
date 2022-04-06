@@ -1,2 +1,2 @@
-# ctools
+# Gotools
 Sublime Text Golang plugin
