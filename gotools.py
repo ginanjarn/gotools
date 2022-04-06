@@ -70,6 +70,19 @@ class CompletionList(sublime.CompletionList):
             kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
 
             text_changes = item["textEdit"]
+            additional_text_edits = item.get("additionalTextEdits")
+            if additional_text_edits is not None:
+                yield sublime.CompletionItem.command_completion(
+                    trigger=trigger,
+                    command="gotools_apply_completion",
+                    args={
+                        "completion": text_changes,
+                        "additional_changes": additional_text_edits,
+                    },
+                    annotation=annotation,
+                    kind=kind,
+                )
+                continue
 
             # default
             yield sublime.CompletionItem(
@@ -92,6 +105,18 @@ class CompletionList(sublime.CompletionList):
             else [],
             flags=sublime.INHIBIT_WORD_COMPLETIONS
             | sublime.INHIBIT_EXPLICIT_COMPLETIONS,
+        )
+
+
+class GotoolsApplyCompletionCommand(sublime_plugin.TextCommand):
+    def run(self, edit, completion, additional_changes):
+        # gopls insert completion at first
+        completion["range"]["end"] = completion["range"]["start"]
+        self.view.run_command(
+            "gotools_apply_document_change", {"changes": [completion]}
+        )
+        self.view.run_command(
+            "gotools_apply_document_change", {"changes": additional_changes}
         )
 
 
