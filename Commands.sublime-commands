@@ -1,0 +1,7 @@
+[
+	{ "caption": "Gotools: Document Formatting", "command": "gotools_document_formatting" },
+	{ "caption": "Gotools: Code Action", "command": "gotools_code_action" },
+	{ "caption": "Gotools: Rename", "command": "gotools_prepare_rename" },
+	{ "caption": "Gotools: Go To Definition", "command": "gotools_goto_definition" },
+	{ "caption": "Gotools: Go To Declaration", "command": "gotools_goto_declaration" },
+]
