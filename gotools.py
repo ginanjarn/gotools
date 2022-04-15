@@ -613,9 +613,6 @@ class GoplsClient(lsp.LSPClient):
         else:
             self.server_running = True
 
-    def server_running(self):
-        return bool(self.transport)
-
     def _hide_completion(self, character: str):
         LOGGER.info("_hide_completion")
 
@@ -624,8 +621,8 @@ class GoplsClient(lsp.LSPClient):
 
     def shutdown_server(self):
         LOGGER.debug("shutdown_server")
-        if self.transport:
-            self.transport.terminate()
+        if self.server_running:
+            self.reset_session()
 
     def handle_initialize(self, message: lsp.RPCMessage):
         LOGGER.info("handle_initialize")
@@ -1188,3 +1185,14 @@ class GotoolsGotoDeclarationCommand(sublime_plugin.TextCommand):
 
     def is_visible(self):
         return valid_source(self.view) and GOPLS_CLIENT.is_initialized
+
+
+class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
+    def run(self, edit, location=None):
+        LOGGER.info("GotoolsRestartServerCommand")
+
+        if GOPLS_CLIENT.server_running:
+            GOPLS_CLIENT.shutdown_server()
+
+    def is_visible(self):
+        return GOPLS_CLIENT.server_running

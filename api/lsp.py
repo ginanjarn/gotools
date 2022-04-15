@@ -278,6 +278,25 @@ class LSPClient:
         # document version
         self.document_version_map = {}
 
+    def reset_session(self):
+        self.transport = None
+
+        # server status
+        self.server_running = False
+        self.server_capabilities = {}
+
+        # project status
+        self.is_initialized = False
+
+        self.initialize_options = {}
+
+        # request
+        self.request_id = 0
+        # active document
+        self.active_document = ""
+        # document version
+        self.document_version_map = {}
+
     def get_request_id(self):
         self.request_id += 1
         return self.request_id
