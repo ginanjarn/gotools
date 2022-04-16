@@ -604,6 +604,9 @@ class GoplsClient(lsp.LSPClient):
     def run_server(self, gopls="gopls", *args):
         commands = [gopls, "-rpc.trace", "-vv"]
         commands.extend(args)
+
+        sublime.status_message("starting 'gopls'")
+
         try:
             self.transport = StandardIO(commands)
             self._register_commands()
@@ -623,6 +626,8 @@ class GoplsClient(lsp.LSPClient):
         LOGGER.debug("shutdown_server")
         if self.server_running:
             self.reset_session()
+
+            sublime.status_message("'gopls' terminated")
 
     def handle_initialize(self, message: lsp.RPCMessage):
         LOGGER.info("handle_initialize")
