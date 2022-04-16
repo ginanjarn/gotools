@@ -616,7 +616,7 @@ class GoplsClient(lsp.LSPClient):
     def _hide_completion(self, character: str):
         LOGGER.info("_hide_completion")
 
-        if character in self.completion_commit_character:
+        if character in ";:!]})":
             ACTIVE_DOCUMENT.hide_completion()
 
     def shutdown_server(self):

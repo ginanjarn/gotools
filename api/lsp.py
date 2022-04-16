@@ -792,6 +792,9 @@ class LSPClient:
         }
         self.transport.notify(RPCMessage.notification("textDocument/didOpen", params))
 
+    def _hide_completion(self, characters: str):
+        pass
+
     def textDocument_didChange(self, file_name: str, changes: dict):
         LOGGER.info("textDocument_didChange")
 
