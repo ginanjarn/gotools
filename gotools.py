@@ -639,10 +639,15 @@ class GoplsClient(lsp.LSPClient):
 
         capabilities = message.result["capabilities"]
 
-        self.is_initialized = True
-
         # notify if initialized
         self.transport.notify(lsp.RPCMessage.notification("initialized", {}))
+        self.is_initialized = True
+
+        file_name = ACTIVE_DOCUMENT.view.file_name()
+        source = ACTIVE_DOCUMENT.view.substr(
+            sublime.Region(0, ACTIVE_DOCUMENT.view.size())
+        )
+        GOPLS_CLIENT.textDocument_didOpen(file_name, source)
 
     def handle_textDocument_completion(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_completion")
@@ -945,9 +950,6 @@ class EventListener(sublime_plugin.EventListener):
         except ServerOffline:
             GOPLS_CLIENT.run_server()
             GOPLS_CLIENT.initialize(get_project_path(file_name))
-            GOPLS_CLIENT.textDocument_didOpen(file_name, source)
-
-            GOPLS_CLIENT.textDocument_completion(file_name, row, col)
 
     def on_hover(self, view: sublime.View, point: int, hover_zone: int) -> None:
         if not valid_source(view):
@@ -976,9 +978,6 @@ class EventListener(sublime_plugin.EventListener):
         except ServerOffline:
             GOPLS_CLIENT.run_server()
             GOPLS_CLIENT.initialize(get_project_path(file_name))
-            GOPLS_CLIENT.textDocument_didOpen(file_name, source)
-
-            GOPLS_CLIENT.textDocument_hover(file_name, row, col)
 
     def on_load_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
