@@ -13,6 +13,7 @@ import sublime_plugin
 from .api import lsp
 from .api.lsp import StandardIO, ServerOffline, DocumentURI
 from .third_party import mistune
+from .api import tools
 
 
 LOGGER = logging.getLogger(__name__)
@@ -1222,3 +1223,13 @@ class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
 
     def is_visible(self):
         return GOPLS_CLIENT.server_running
+
+
+class GotoolsInstallToolsCommand(sublime_plugin.TextCommand):
+    def run(self, edit, location=None):
+        LOGGER.info("GotoolsInstallToolsCommand")
+
+        tools.install_tools()
+
+    def is_visible(self):
+        return valid_source(self.view)
