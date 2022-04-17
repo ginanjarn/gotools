@@ -385,9 +385,6 @@ class ActiveDocument:
 
     def show_completions(self, completions):
 
-        if completions is None:
-            return
-
         completions = completions["items"]
         completion_list = CompletionList.from_rpc(completions)
         self._completion_result = completion_list
@@ -426,9 +423,6 @@ class ActiveDocument:
             yield line
 
     def show_popup(self, documentation):
-
-        if documentation is None:
-            return
 
         contents = documentation["contents"]["value"]
         kind = documentation["contents"]["kind"]
@@ -639,6 +633,9 @@ class GoplsClient(lsp.LSPClient):
             LOGGER.error(message.error)
             return
 
+        if message.result is None:
+            return
+
         capabilities = message.result["capabilities"]
 
         self.is_initialized = True
@@ -653,6 +650,9 @@ class GoplsClient(lsp.LSPClient):
             LOGGER.error(message.error)
             return
 
+        if message.result is None:
+            return
+
         ACTIVE_DOCUMENT.show_completions(message.result)
 
     def handle_textDocument_hover(self, message: lsp.RPCMessage):
@@ -662,6 +662,9 @@ class GoplsClient(lsp.LSPClient):
             LOGGER.error(message.error)
             return
 
+        if message.result is None:
+            return
+
         ACTIVE_DOCUMENT.show_popup(message.result)
 
     def handle_textDocument_formatting(self, message: lsp.RPCMessage):
@@ -669,6 +672,9 @@ class GoplsClient(lsp.LSPClient):
 
         if message.error:
             LOGGER.error(message.error)
+            return
+
+        if message.result is None:
             return
 
         changes = message.result
@@ -697,6 +703,9 @@ class GoplsClient(lsp.LSPClient):
             LOGGER.error(message.error)
             return
 
+        if message.result is None:
+            return
+
         ACTIVE_DOCUMENT.show_code_action(message.result)
 
     def handle_textDocument_publishDiagnostics(self, message: lsp.RPCMessage):
@@ -705,6 +714,9 @@ class GoplsClient(lsp.LSPClient):
         LOGGER.debug(message)
         if message.error:
             LOGGER.error(message.error)
+            return
+
+        if message.result is None:
             return
 
         params = message.params
@@ -821,6 +833,9 @@ class GoplsClient(lsp.LSPClient):
         LOGGER.info("handle_textDocument_rename")
         LOGGER.debug("message: %s", message)
 
+        if message.result is None:
+            return
+
         try:
             changes = message.result["changes"]
         except Exception as err:
@@ -834,11 +849,17 @@ class GoplsClient(lsp.LSPClient):
     def handle_textDocument_definition(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_definition")
         LOGGER.debug("message: %s", message)
+
+        if message.result is None:
+            return
         ACTIVE_DOCUMENT.goto(message.result)
 
     def handle_textDocument_declaration(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_declaration")
         LOGGER.debug("message: %s", message)
+
+        if message.result is None:
+            return
         ACTIVE_DOCUMENT.goto(message.result)
 
 
