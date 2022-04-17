@@ -711,14 +711,7 @@ class GoplsClient(lsp.LSPClient):
 
     def handle_textDocument_publishDiagnostics(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_publishDiagnostics")
-
         LOGGER.debug(message)
-        if message.error:
-            LOGGER.error(message.error)
-            return
-
-        if message.result is None:
-            return
 
         params = message.params
         file_name = DocumentURI(params["uri"]).to_path()
