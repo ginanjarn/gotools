@@ -5,7 +5,7 @@ import os
 import threading
 import time
 
-from typing import List, Union, Dict, Iterator, Any
+from typing import List, Union, Dict, Iterator
 
 import sublime
 import sublime_plugin
@@ -150,11 +150,12 @@ class Diagnostics:
         4: "gotools.hint",
     }
 
-    def __init__(self, view: sublime.View):
-        self.view = view
-        self.window = self.view.window()
+    def __init__(self, file_name: str):
+        self.file_name = file_name
+        self.window = sublime.active_window()
+        self.view = self.window.find_open_file(file_name)
         self.message_map = {}
-        self.outputpanel_name = f"gotools:{self.view.file_name()}"
+        self.outputpanel_name = f"ctools:{file_name}"
 
     def add_regions(
         self, key: str, regions: List[sublime.Region], *, error_region: bool = False
@@ -169,7 +170,7 @@ class Diagnostics:
             flags=(
                 sublime.DRAW_NO_FILL
                 | sublime.DRAW_NO_OUTLINE
-                | sublime.DRAW_SOLID_UNDERLINE
+                | sublime.DRAW_SQUIGGLY_UNDERLINE
             ),
         )
 
@@ -229,7 +230,7 @@ class Diagnostics:
         """show output panel"""
 
         def build_message(mapping: Dict[tuple, str]):
-            short_name = os.path.basename(self.view.file_name())
+            short_name = os.path.basename(self.file_name)
             for key, val in mapping.items():
                 row, col = key
                 yield f"{short_name}:{row+1}:{col} {val}"
@@ -530,12 +531,15 @@ class Document:
 
     def __init__(self, file_name: str, *, force_open: bool = False):
 
-        if force_open:
-            self.view: sublime.View = sublime.active_window().open_file(file_name)
-        else:
-            self.view: sublime.View = sublime.active_window().find_open_file(file_name)
+        self.window: sublime.Window = sublime.active_window()
+        self.file_name = file_name
 
-        self.window: sublime.Window = self.view.window()
+        if force_open:
+            self.view: sublime.View = self.window.open_file(file_name)
+        else:
+            self.view: sublime.View = self.window.find_open_file(file_name)
+            if self.view is None:
+                raise ValueError(f"unable get view for {file_name}")
 
     def focus_view(self):
         self.window.focus_view(self.view)
@@ -544,7 +548,7 @@ class Document:
 
         # wait until view loaded
         while True:
-            LOGGER.debug("loading %s", self.view.file_name())
+            LOGGER.debug("loading %s", self.file_name)
             if self.view.is_loading():
                 time.sleep(0.5)
                 continue
@@ -558,13 +562,13 @@ class Document:
             LOGGER.debug("in document change process")
             return
 
-        LOGGER.debug("apply diagnostics to: %s", self.view.file_name())
-        diagnostics = Diagnostics(self.view)
+        LOGGER.debug("apply diagnostics to: %s", self.file_name)
+        diagnostics = Diagnostics(self.file_name)
         diagnostics.set_diagnostics(diagnostics_item)
         diagnostics.show_panel()
 
     def clear_diagnostics(self):
-        diagnostic = Diagnostics(self.view)
+        diagnostic = Diagnostics(self.file_name)
         try:
             diagnostic.erase_highlight()
             diagnostic.destroy_panel()
@@ -573,7 +577,7 @@ class Document:
             LOGGER.error(err)
 
     def show_diagnostics(self):
-        diagnostic = Diagnostics(self.view)
+        diagnostic = Diagnostics(self.file_name)
         diagnostic.show_panel()
 
     def set_status(self, message: str):
@@ -939,7 +943,6 @@ class EventListener(sublime_plugin.EventListener):
 
     @pipe
     def on_query_completions_task(self, view, locations):
-        source = view.substr(sublime.Region(0, view.size()))
         file_name = view.file_name()
         row, col = view.rowcol(locations[0])
 
@@ -967,7 +970,6 @@ class EventListener(sublime_plugin.EventListener):
 
     @pipe
     def on_hover_text_task(self, view, point):
-        source = view.substr(sublime.Region(0, view.size()))
         file_name = view.file_name()
         row, col = view.rowcol(point)
 
@@ -1033,6 +1035,8 @@ class EventListener(sublime_plugin.EventListener):
             ACTIVE_DOCUMENT.view = None
         except ServerOffline:
             pass
+        finally:
+            Diagnostics(file_name).destroy_panel()
 
     def on_post_save_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
