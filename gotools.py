@@ -1051,36 +1051,36 @@ class EventListener(sublime_plugin.EventListener):
 class TextChangeListener(sublime_plugin.TextChangeListener):
     def on_text_changed_async(self, changes: List[sublime.TextChange]):
 
-        file_name = self.buffer.file_name()
         view = self.buffer.primary_view()
 
         if not (valid_source(view) and GOPLS_CLIENT.is_initialized):
             return
 
         LOGGER.info("on_text_changed_async")
-
-        content_changes = []
-        for change in changes:
-            start: sublime.HistoricPosition = change.a
-            end: sublime.HistoricPosition = change.b
-
-            content_changes.append(
-                {
-                    "range": {
-                        "end": {"character": end.col, "line": end.row},
-                        "start": {"character": start.col, "line": start.row},
-                    },
-                    "rangeLength": change.len_utf8,
-                    "text": change.str,
-                }
-            )
+        content_changes = [self.build_change(change) for change in changes]
 
         try:
+            file_name = self.buffer.file_name()
             LOGGER.debug(f"notify change for {file_name}\n{content_changes}")
+
             GOPLS_CLIENT.cancelRequest()
             GOPLS_CLIENT.textDocument_didChange(file_name, content_changes)
         except ServerOffline:
             pass
+
+    @staticmethod
+    def build_change(change: sublime.TextChange):
+        start: sublime.HistoricPosition = change.a
+        end: sublime.HistoricPosition = change.b
+
+        return {
+            "range": {
+                "end": {"character": end.col, "line": end.row},
+                "start": {"character": start.col, "line": start.row},
+            },
+            "rangeLength": change.len_utf8,
+            "text": change.str,
+        }
 
 
 class GotoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
