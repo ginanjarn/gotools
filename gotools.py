@@ -488,8 +488,8 @@ class ActiveDocument:
         self.view.run_command("gotools_apply_document_change", {"changes": changes})
 
     def prepare_rename(self, params):
-        start = params.result["start"]
-        end = params.result["end"]
+        start = params["range"]["start"]
+        end = params["range"]["end"]
         placeholder = self.view.substr(
             sublime.Region(
                 self.view.text_point(start["line"], start["character"]),
@@ -781,14 +781,16 @@ class GoplsClient(lsp.LSPClient):
 
         sublime.status_message(message.params["value"]["message"])
 
-    def _apply_edit_changes(self, edit_changes: Dict[str, dict]):
-        LOGGER.info("_apply_edit_changes")
+    def _apply_document_changes(self, document_changes: List[Dict[str, dict]]):
+        LOGGER.info("_apply_document_changes")
 
-        if not edit_changes:
+        if not document_changes:
             LOGGER.debug("nothing changed")
             return
 
-        for file_name, text_changes in edit_changes.items():
+        for change in document_changes:
+            file_name = DocumentURI(change["textDocument"]["uri"]).to_path()
+            text_changes = change["edits"]
             LOGGER.debug("try apply changes to %s", file_name)
 
             while True:
@@ -800,7 +802,7 @@ class GoplsClient(lsp.LSPClient):
 
             LOGGER.debug("apply changes to: %s", file_name)
             DOCUMENT_CHANGE_SYNC.set_busy()
-            document = Document(DocumentURI(file_name).to_path(), force_open=True)
+            document = Document(file_name, force_open=True)
 
             try:
                 document.apply_document_change(text_changes)
@@ -815,17 +817,18 @@ class GoplsClient(lsp.LSPClient):
 
     def handle_workspace_applyEdit(self, message: lsp.RPCMessage):
         LOGGER.info("handle_workspace_applyEdit")
+        LOGGER.debug(message)
 
         params = message.params
         try:
-            changes = params["edit"]["changes"]
+            document_changes = params["edit"]["documentChanges"]
         except Exception as err:
             LOGGER.error(repr(err))
         else:
             try:
-                self._apply_edit_changes(changes)
+                self._apply_document_changes(document_changes)
             except Exception as err:
-                LOGGER.error("error apply edit_changes: %s", repr(err))
+                LOGGER.error("error apply document_changes: %s", repr(err))
 
     def handle_client_registerCapability(self, message: lsp.RPCMessage):
         LOGGER.info("handle_client_registerCapability")
@@ -837,24 +840,35 @@ class GoplsClient(lsp.LSPClient):
         LOGGER.info("handle_textDocument_prepareRename")
         LOGGER.debug("message: %s", message)
 
-        ACTIVE_DOCUMENT.prepare_rename(message)
+        if message.error:
+            LOGGER.error(message.error)
+            return
+
+        if message.result is None:
+            return
+
+        ACTIVE_DOCUMENT.prepare_rename(message.result)
 
     def handle_textDocument_rename(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_rename")
         LOGGER.debug("message: %s", message)
 
+        if message.error:
+            LOGGER.error(message.error)
+            return
+
         if message.result is None:
             return
 
         try:
-            changes = message.result["changes"]
+            document_changes = message.result["documentChanges"]
         except Exception as err:
             LOGGER.error(repr(err))
         else:
             try:
-                self._apply_edit_changes(changes)
+                self._apply_document_changes(document_changes)
             except Exception as err:
-                LOGGER.error("error apply edit_changes: %s", repr(err))
+                LOGGER.error("error apply document_changes: %s", repr(err))
 
     def handle_textDocument_definition(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_definition")
