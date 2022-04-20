@@ -61,38 +61,35 @@ class CompletionList(sublime.CompletionList):
     """CompletionList"""
 
     @staticmethod
-    def build_completion(rpc_items: Dict[str, object]):
+    def build_completion(item: Dict[str, object]):
         """build completion item"""
 
-        for item in rpc_items:
+        trigger = item["filterText"]
+        annotation = item.get("detail", "")
+        kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
 
-            trigger = item["filterText"]
-            annotation = item.get("detail", "")
-            kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
-
-            text_changes = item["textEdit"]
-            additional_text_edits = item.get("additionalTextEdits")
-            if additional_text_edits is not None:
-                yield sublime.CompletionItem.command_completion(
-                    trigger=trigger,
-                    command="gotools_apply_completion",
-                    args={
-                        "completion": text_changes,
-                        "additional_changes": additional_text_edits,
-                    },
-                    annotation=annotation,
-                    kind=kind,
-                )
-                continue
-
-            # default
-            yield sublime.CompletionItem(
+        text_changes = item["textEdit"]
+        additional_text_edits = item.get("additionalTextEdits")
+        if additional_text_edits is not None:
+            return sublime.CompletionItem.command_completion(
                 trigger=trigger,
+                command="gotools_apply_completion",
+                args={
+                    "completion": text_changes,
+                    "additional_changes": additional_text_edits,
+                },
                 annotation=annotation,
-                completion=text_changes["newText"],
-                completion_format=sublime.COMPLETION_FORMAT_SNIPPET,
                 kind=kind,
             )
+
+        # default
+        return sublime.CompletionItem(
+            trigger=trigger,
+            annotation=annotation,
+            completion=text_changes["newText"],
+            completion_format=sublime.COMPLETION_FORMAT_SNIPPET,
+            kind=kind,
+        )
 
     @classmethod
     def from_rpc(cls, completion_items: List[dict]):
@@ -105,11 +102,12 @@ class CompletionList(sublime.CompletionList):
             return int(st)
 
         completion_items.sort(key=sort_by_sortText)
+        completions = [
+            cls.build_completion(completion) for completion in completion_items
+        ]
 
         return cls(
-            completions=list(cls.build_completion(completion_items))
-            if completion_items
-            else [],
+            completions=completions if completion_items else [],
             flags=sublime.INHIBIT_WORD_COMPLETIONS
             | sublime.INHIBIT_EXPLICIT_COMPLETIONS
             | sublime.INHIBIT_REORDER,
@@ -330,13 +328,17 @@ class GotoolsApplyDocumentChangeCommand(sublime_plugin.TextCommand):
         view: sublime.View = self.view
         LOGGER.debug(f"{view.file_name()} is loading: {view.is_loading()}")
 
-        list_change_item: List[ChangeItem] = [
-            ChangeItem.from_rpc(self.view, change=change) for change in changes
-        ]
         try:
-            self.apply(edit, list_change_item)
+            list_change_item: List[ChangeItem] = [
+                ChangeItem.from_rpc(self.view, change=change) for change in changes
+            ]
         except Exception as err:
-            LOGGER.error(err, exc_info=True)
+            LOGGER.error(f"unable build ChangeItem from {changes}")
+        else:
+            try:
+                self.apply(edit, list_change_item)
+            except Exception as err:
+                LOGGER.error(err, exc_info=True)
 
     def apply(self, edit, list_change_item):
         def sort_by_region(item: ChangeItem):
@@ -464,27 +466,62 @@ class ActiveDocument:
             max_width=1024,
         )
 
+    @staticmethod
+    def apply_document_changes(document_changes: List[Dict[str, dict]]):
+        LOGGER.info("apply_document_changes")
+
+        if not document_changes:
+            LOGGER.debug("nothing changed")
+            return
+
+        for change in document_changes:
+            file_name = DocumentURI(change["textDocument"]["uri"]).to_path()
+            text_changes = change["edits"]
+            LOGGER.debug("try apply changes to %s", file_name)
+
+            while True:
+                if DOCUMENT_CHANGE_SYNC.busy:
+                    LOGGER.debug("busy")
+                    time.sleep(0.5)
+                    continue
+                break
+
+            LOGGER.debug("apply changes to: %s", file_name)
+            DOCUMENT_CHANGE_SYNC.set_busy()
+            document = Document(file_name, force_open=True)
+
+            try:
+                document.apply_document_change(text_changes)
+
+            except Exception as err:
+                LOGGER.error(err)
+
+            finally:
+                DOCUMENT_CHANGE_SYNC.set_finished()
+
+            LOGGER.debug("finish apply to: %s", file_name)
+
     def show_code_action(self, action_params: List[dict]):
         def on_done(index=-1):
             if index > -1:
-                self.view.run_command(
-                    "gotools_workspace_exec_command",
-                    {"params": action_params[index]["command"]},
-                )
+                action = action_params[index]
+                LOGGER.debug(action)
+
+                edit = action.get("edit")
+                if edit:
+                    documentChanges = edit["documentChanges"]
+                    self.apply_document_changes(documentChanges)
+
+                command = action.get("command")
+                if command:
+                    self.view.run_command(
+                        "gotools_workspace_exec_command", {"params": command},
+                    )
 
         items = [item["title"] for item in action_params]
         self.window.show_quick_panel(items, on_done)
 
-    def apply_document_change(self, changes: List[dict]):
-
-        # wait until view loaded
-        while True:
-            LOGGER.debug("loading %s", self.view.file_name())
-            if self.view.is_loading():
-                time.sleep(0.5)
-                continue
-            break
-
+    def apply_document_formatting(self, changes: List[dict]):
         self.view.run_command("gotools_apply_document_change", {"changes": changes})
 
     def prepare_rename(self, params):
@@ -696,7 +733,7 @@ class GoplsClient(lsp.LSPClient):
 
         changes = message.result
         try:
-            ACTIVE_DOCUMENT.apply_document_change(changes)
+            ACTIVE_DOCUMENT.apply_document_formatting(changes)
         except Exception as err:
             LOGGER.error(err)
 
@@ -781,40 +818,6 @@ class GoplsClient(lsp.LSPClient):
 
         sublime.status_message(message.params["value"]["message"])
 
-    def _apply_document_changes(self, document_changes: List[Dict[str, dict]]):
-        LOGGER.info("_apply_document_changes")
-
-        if not document_changes:
-            LOGGER.debug("nothing changed")
-            return
-
-        for change in document_changes:
-            file_name = DocumentURI(change["textDocument"]["uri"]).to_path()
-            text_changes = change["edits"]
-            LOGGER.debug("try apply changes to %s", file_name)
-
-            while True:
-                if DOCUMENT_CHANGE_SYNC.busy:
-                    LOGGER.debug("busy")
-                    time.sleep(0.5)
-                    continue
-                break
-
-            LOGGER.debug("apply changes to: %s", file_name)
-            DOCUMENT_CHANGE_SYNC.set_busy()
-            document = Document(file_name, force_open=True)
-
-            try:
-                document.apply_document_change(text_changes)
-
-            except Exception as err:
-                LOGGER.error(err)
-
-            finally:
-                DOCUMENT_CHANGE_SYNC.set_finished()
-
-            LOGGER.debug("finish apply to: %s", file_name)
-
     def handle_workspace_applyEdit(self, message: lsp.RPCMessage):
         LOGGER.info("handle_workspace_applyEdit")
         LOGGER.debug(message)
@@ -826,7 +829,7 @@ class GoplsClient(lsp.LSPClient):
             LOGGER.error(repr(err))
         else:
             try:
-                self._apply_document_changes(document_changes)
+                ACTIVE_DOCUMENT.apply_document_changes(document_changes)
             except Exception as err:
                 LOGGER.error("error apply document_changes: %s", repr(err))
 
@@ -866,7 +869,7 @@ class GoplsClient(lsp.LSPClient):
             LOGGER.error(repr(err))
         else:
             try:
-                self._apply_document_changes(document_changes)
+                ACTIVE_DOCUMENT.apply_document_changes(document_changes)
             except Exception as err:
                 LOGGER.error("error apply document_changes: %s", repr(err))
 
@@ -1124,7 +1127,7 @@ class GotoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
 
 class GotoolsCodeActionCommand(sublime_plugin.TextCommand):
     def run(self, edit):
-        LOGGER.info("GotoolsDocumentFormattingCommand")
+        LOGGER.info("GotoolsCodeActionCommand")
 
         if valid_source(self.view) and GOPLS_CLIENT.is_initialized:
             location = self.view.sel()[0]
