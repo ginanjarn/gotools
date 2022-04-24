@@ -300,18 +300,21 @@ class ChangeItem:
 class DocumentChangeSync:
     """Document change sync prevent multiple file changes at same time"""
 
-    _lock = threading.Lock()
-
     def __init__(self):
-        self.busy = False
+        self._lock = threading.Lock()
+
+    @property
+    def busy(self):
+        self._lock.locked()
 
     def set_busy(self):
-        with self._lock:
-            self.busy = True
+        self._lock.acquire()
 
     def set_finished(self):
-        with self._lock:
-            self.busy = False
+        try:
+            self._lock.release()
+        except RuntimeError:
+            pass
 
 
 DOCUMENT_CHANGE_SYNC = DocumentChangeSync()
