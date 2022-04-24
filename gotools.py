@@ -5,6 +5,7 @@ import os
 import threading
 import time
 
+from collections import OrderedDict
 from typing import List, Union, Dict, Iterator
 
 import sublime
@@ -469,17 +470,22 @@ class ActiveDocument:
             max_width=1024,
         )
 
-    @staticmethod
-    def apply_document_changes(document_changes: List[Dict[str, dict]]):
+    def apply_document_changes(self, document_changes: List[Dict[str, dict]]):
         LOGGER.info("apply_document_changes")
 
         if not document_changes:
             LOGGER.debug("nothing changed")
             return
 
+        mapped_document_changes = OrderedDict()
         for change in document_changes:
             file_name = DocumentURI(change["textDocument"]["uri"]).to_path()
-            text_changes = change["edits"]
+            edits = change["edits"]
+            mapped_document_changes[file_name] = edits
+
+        mapped_document_changes.move_to_end(self.view.file_name())
+
+        for file_name, text_changes in mapped_document_changes.items():
             LOGGER.debug("try apply changes to %s", file_name)
 
             while True:
