@@ -1077,11 +1077,14 @@ class EventListener(sublime_plugin.EventListener):
 
 
 class TextChangeListener(sublime_plugin.TextChangeListener):
-    def on_text_changed_async(self, changes: List[sublime.TextChange]):
+    def on_text_changed(self, changes: List[sublime.TextChange]):
 
         view = self.buffer.primary_view()
 
-        if not (valid_source(view) and GOPLS_CLIENT.is_initialized):
+        if view.file_name() is None:
+            return
+
+        if not (GOPLS_CLIENT.is_initialized and valid_source(view)):
             return
 
         LOGGER.info("on_text_changed_async")
