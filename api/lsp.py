@@ -276,6 +276,7 @@ class LSPClient:
         self.request_id = 0
         # active document
         self.active_document = ""
+        self.source = ""
         # document version
         self.document_version_map = {}
 
@@ -777,11 +778,12 @@ class LSPClient:
         if not self.server_running:
             raise ServerOffline
 
-        if self.active_document == file_name:
+        if self.active_document == file_name and self.source == source:
             LOGGER.debug("document already opened")
             return
 
         self.active_document = file_name
+        self.source = source
 
         params = {
             "textDocument": {
