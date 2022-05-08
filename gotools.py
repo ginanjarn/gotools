@@ -369,6 +369,37 @@ class GotoolsApplyDocumentChangeCommand(sublime_plugin.TextCommand):
         DOCUMENT_CHANGE_SYNC.set_finished()
 
 
+class WindowProgress:
+    """window progress"""
+
+    def __init__(self):
+        self.status_key = "GOTOOLS_STATUS"
+        self.busy = False
+
+    def progress_task(self, title, message):
+        view = sublime.active_window().active_view()
+        while True:
+            for spin_char in "◓◑◒◐":
+                if not self.busy:
+                    return
+                view.set_status(self.status_key, f"{spin_char} {title}: {message}")
+                time.sleep(0.1)
+
+    def start(self, title: str, message: str, /):
+        self.busy = True
+        thread = threading.Thread(target=self.progress_task, args=(title, message))
+        thread.start()
+
+    def finish(self):
+        self.busy = False
+        window: sublime.Window = sublime.active_window()
+        for view in window.views():
+            view.erase_status(self.status_key)
+
+
+WINDOW_PROGRESS = WindowProgress()
+
+
 class ActiveDocument:
     """commands to active view"""
 
@@ -831,7 +862,20 @@ class GoplsClient(lsp.LSPClient):
         LOGGER.info("handle_S_progress")
         LOGGER.debug(message)
 
-        sublime.status_message(message.params["value"]["message"])
+        params = message.params
+        try:
+            kind = params["value"]["kind"]
+            message = params["value"]["message"]
+
+            if kind == "begin":
+                title = params["value"]["title"]
+                WINDOW_PROGRESS.start(title, message)
+            else:
+                WINDOW_PROGRESS.finish()
+                sublime.status_message(message)
+
+        except Exception as err:
+            LOGGER.error("error apply progress", exc_info=True)
 
     def handle_workspace_applyEdit(self, message: lsp.RPCMessage):
         LOGGER.info("handle_workspace_applyEdit")
