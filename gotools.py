@@ -1315,8 +1315,4 @@ class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
 class GotoolsInstallToolsCommand(sublime_plugin.TextCommand):
     def run(self, edit, location=None):
         LOGGER.info("GotoolsInstallToolsCommand")
-
         tools.install_tools()
-
-    def is_visible(self):
-        return valid_source(self.view)
