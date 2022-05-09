@@ -1133,8 +1133,8 @@ class EventListener(sublime_plugin.EventListener):
 
         try:
             GOPLS_CLIENT.textDocument_didSave(file_name)
-            document = Document(file_name)
-            document.clear_diagnostics()
+            # document = Document(file_name)
+            # document.clear_diagnostics()
 
         except ServerOffline:
             pass
