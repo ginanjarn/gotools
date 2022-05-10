@@ -1312,4 +1312,5 @@ class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
 class GotoolsInstallToolsCommand(sublime_plugin.TextCommand):
     def run(self, edit, location=None):
         LOGGER.info("GotoolsInstallToolsCommand")
-        tools.install_tools()
+        thread = threading.Thread(target=tools.install_tools)
+        thread.start()
