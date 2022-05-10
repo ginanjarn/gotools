@@ -1133,9 +1133,6 @@ class EventListener(sublime_plugin.EventListener):
 
         try:
             GOPLS_CLIENT.textDocument_didSave(file_name)
-            # document = Document(file_name)
-            # document.clear_diagnostics()
-
         except ServerOffline:
             pass
 
@@ -1315,8 +1312,5 @@ class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
 class GotoolsInstallToolsCommand(sublime_plugin.TextCommand):
     def run(self, edit, location=None):
         LOGGER.info("GotoolsInstallToolsCommand")
-
-        tools.install_tools()
-
-    def is_visible(self):
-        return valid_source(self.view)
+        thread = threading.Thread(target=tools.install_tools)
+        thread.start()

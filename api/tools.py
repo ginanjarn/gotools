@@ -25,14 +25,14 @@ def install_tools():
     for tool in TOOLS:
         tool_name = tool.name
         print(f"> installing {tool_name}")
-        toolver = "latest" if not tool.version else tool.version
-        command = ["go", "get", f"{tool_name}@{toolver}"]
+        tool_ver = "latest" if not tool.version else tool.version
+        command = ["go", "install", f"{tool_name}@{tool_ver}"]
         try:
             exec_cmd(command)
         except Exception as err:
             print(err)
         else:
-            print(f"> {tool} installed")
+            print(f"> {tool.name} installed")
 
 
 def exec_cmd(command):
@@ -51,6 +51,10 @@ def exec_cmd(command):
         env=os.environ,
         startupinfo=startupinfo,
     )
-    poll = process.poll()
-    if poll != 0:
-        raise ValueError(f"install error with exit code {poll}")
+
+    sout, serr = process.communicate()
+    if process.returncode != 0:
+        raise Exception(serr.decode())
+
+    if sout:
+        print(sout.decode())
