@@ -1051,16 +1051,20 @@ class StandardIO(AbstractTransport):
             startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
 
         LOGGER.debug("command: %s", command)
-        process = subprocess.Popen(
-            # ["clangd", "--log=info", "--offset-encoding=utf-8"],
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=os.environ,
-            bufsize=0,  # no buffering
-            startupinfo=startupinfo,
-        )
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=os.environ,
+                bufsize=0,  # no buffering
+                startupinfo=startupinfo,
+            )
+        except FileNotFoundError as err:
+            raise FileNotFoundError(f"'{command[0]}' not found in PATH") from err
+        except Exception as err:
+            raise Exception(f"run server error: {err}") from err
         return process
 
     def _write(self, message: RPCMessage):
