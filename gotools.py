@@ -1,5 +1,6 @@
 """gotools main app"""
 
+import datetime
 import logging
 import os
 import threading
@@ -691,19 +692,22 @@ class GoplsClient(lsp.LSPClient):
         self.initialize_options = {}
 
     def run_server(self, gopls="gopls", *args):
-        commands = [gopls, "-rpc.trace", "-vv"]
-        commands.extend(args)
+        """run gopls server
+
+        Raises:
+            OSError
+        """
 
         sublime.status_message("starting 'gopls'")
 
-        try:
-            self.transport = StandardIO(commands)
-            self._register_commands()
+        commands = [gopls]
+        if LOGGER.level > logging.WARNING:
+            commands.extend(["-rpc.trace", "-vv"])
+        commands.extend(args)
 
-        except Exception as err:
-            LOGGER.error("running server error", exc_info=True)
-        else:
-            self.server_running = True
+        self.transport = StandardIO(commands)
+        self._register_commands()
+        self.server_running = True
 
     def _hide_completion(self, character: str):
         LOGGER.info("_hide_completion")
@@ -1004,7 +1008,49 @@ def valid_identifier(view: sublime.View, location: int):
     return True
 
 
+class CancelRunServer:
+    """Cancel run server handler"""
+
+    def __init__(self):
+        self.next_check = None
+        self.exp_base = 1
+
+    def reset(self):
+        self.next_check = None
+        self.exp_base = 1
+
+    def is_canceled(self):
+        if not self.next_check:
+            return False
+        if datetime.datetime.now() >= self.next_check:
+            return False
+        if self.exp_base > 5:
+            self.reset()
+        return True
+
+    def cancel(self):
+        delay = 10 ** self.exp_base
+        self.exp_base += 1
+        self.next_check = datetime.datetime.now() + datetime.timedelta(seconds=delay)
+        LOGGER.debug(f"next request at {self.next_check}")
+
+
+CANCEL_RUN_SERVER = CancelRunServer()
+
+
 class EventListener(sublime_plugin.EventListener):
+    """sublime event listener"""
+
+    def _run_server(self, project_path):
+        CANCEL_RUN_SERVER.cancel()
+        try:
+            GOPLS_CLIENT.run_server()
+        except Exception as err:
+            LOGGER.error(f"run server error: {err}")
+            sublime.status_message(f"run server error: {err}")
+        else:
+            GOPLS_CLIENT.initialize(project_path)
+
     def on_query_completions(
         self, view: sublime.View, prefix: str, locations: List[int]
     ) -> Union[CompletionList, None]:
@@ -1039,8 +1085,10 @@ class EventListener(sublime_plugin.EventListener):
             GOPLS_CLIENT.textDocument_completion(file_name, row, col)
 
         except ServerOffline:
-            GOPLS_CLIENT.run_server()
-            GOPLS_CLIENT.initialize(get_project_path(file_name))
+            # delay for next run server
+            if CANCEL_RUN_SERVER.is_canceled():
+                return
+            self._run_server(get_project_path(file_name))
 
     def on_hover(self, view: sublime.View, point: int, hover_zone: int) -> None:
         if not valid_source(view):
@@ -1066,8 +1114,10 @@ class EventListener(sublime_plugin.EventListener):
             GOPLS_CLIENT.textDocument_hover(file_name, row, col)
 
         except ServerOffline:
-            GOPLS_CLIENT.run_server()
-            GOPLS_CLIENT.initialize(get_project_path(file_name))
+            # delay for next run server
+            if CANCEL_RUN_SERVER.is_canceled():
+                return
+            self._run_server(get_project_path(file_name))
 
     def on_load_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
