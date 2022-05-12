@@ -9,6 +9,7 @@ import threading
 from abc import ABC, abstractmethod
 from queue import Queue
 from typing import Callable
+from urllib.parse import urlparse, urlunparse
 from urllib.request import pathname2url, url2pathname
 
 LOGGER = logging.getLogger(__name__)
@@ -41,11 +42,11 @@ class DocumentURI(str):
     @classmethod
     def from_path(cls, file_name):
         """from file name"""
-        return cls("file:%s" % pathname2url(file_name))
+        return cls(urlunparse(("file", "", pathname2url(file_name), "", "", "")))
 
     def to_path(self) -> str:
         """convert to path"""
-        return url2pathname(self.lstrip("file:"))
+        return url2pathname(urlparse(self).path)
 
 
 class RPCMessage(dict):
@@ -261,6 +262,30 @@ class LSPClient:
 
     def __init__(self):
         self.transport: AbstractTransport = None
+
+        # server status
+        self.server_running = False
+        self.server_capabilities = {}
+
+        # project status
+        self.is_initialized = False
+
+        self.initialize_options = {}
+
+        # request
+        self.request_id = 0
+        # active document
+        self.active_document = ""
+        self.source = ""
+        # document version
+        self.document_version_map = {}
+
+    def reset_session(self):
+        # terminate process
+        if self.transport:
+            self.transport.terminate()
+
+        self.transport = None
 
         # server status
         self.server_running = False
@@ -757,11 +782,12 @@ class LSPClient:
         if not self.server_running:
             raise ServerOffline
 
-        if self.active_document == file_name:
+        if self.active_document == file_name and self.source == source:
             LOGGER.debug("document already opened")
             return
 
         self.active_document = file_name
+        self.source = source
 
         params = {
             "textDocument": {
@@ -772,6 +798,9 @@ class LSPClient:
             }
         }
         self.transport.notify(RPCMessage.notification("textDocument/didOpen", params))
+
+    def _hide_completion(self, characters: str):
+        pass
 
     def textDocument_didChange(self, file_name: str, changes: dict):
         LOGGER.info("textDocument_didChange")
@@ -1022,16 +1051,20 @@ class StandardIO(AbstractTransport):
             startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
 
         LOGGER.debug("command: %s", command)
-        process = subprocess.Popen(
-            # ["clangd", "--log=info", "--offset-encoding=utf-8"],
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=os.environ,
-            bufsize=0,  # no buffering
-            startupinfo=startupinfo,
-        )
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=os.environ,
+                bufsize=0,  # no buffering
+                startupinfo=startupinfo,
+            )
+        except FileNotFoundError as err:
+            raise FileNotFoundError(f"'{command[0]}' not found in PATH") from err
+        except Exception as err:
+            raise Exception(f"run server error: {err}") from err
         return process
 
     def _write(self, message: RPCMessage):
@@ -1162,12 +1195,5 @@ class StandardIO(AbstractTransport):
 
     def terminate(self):
         """terminate process"""
-
         LOGGER.info("terminate")
-
-        self.server_process.kill()
-        self.stdout_thread.join()
-        self.stderr_thread.join()
-
-    def __del__(self):
-        self.terminate()
+        self.server_process.terminate()
