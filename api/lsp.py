@@ -7,7 +7,6 @@ import re
 import subprocess
 import threading
 from abc import ABC, abstractmethod
-from queue import Queue
 from typing import Callable
 from urllib.parse import urlparse, urlunparse
 from urllib.request import pathname2url, url2pathname
@@ -1034,9 +1033,6 @@ class StandardIO(AbstractTransport):
         # request
         self.request_map = {}
 
-        self.message_queue = Queue()
-        self.send_message_thread = threading.Thread(target=self.send_message_task)
-
     def register_command(self, method: str, handler: Callable[[RPCMessage], None]):
         LOGGER.info("register_command")
         self.command_map[method] = handler
@@ -1076,27 +1072,15 @@ class StandardIO(AbstractTransport):
         self.server_process.stdin.flush()
 
     def send_message(self, message: RPCMessage):
-        if message.method in {"initialize", "initialized"}:
-            self._write(message)
-            if message.method == "initialized":
-                self.send_message_thread.start()
-        else:
-            self.message_queue.put(message)
-
-    def send_message_task(self):
-        while True:
-            message = self.message_queue.get()
-            LOGGER.debug(f"Queued message >> {message}")
-            self._write(message)
+        """send message to server"""
+        self._write(message)
 
     def notify(self, message: RPCMessage):
         LOGGER.info("notify")
-
         self.send_message(message)
 
     def respond(self, message: RPCMessage):
         LOGGER.info("respond")
-
         self.send_message(message)
 
     def request(self, message: RPCMessage):
