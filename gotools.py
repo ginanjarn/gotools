@@ -750,8 +750,7 @@ class GoplsClient(lsp.LSPClient):
         # capabilities = message.result["capabilities"]
 
         # notify if initialized
-        self.transport.notify(lsp.RPCMessage.notification("initialized", {}))
-        self.is_initialized = True
+        self.initialized()
 
         file_name = ACTIVE_DOCUMENT.view.file_name()
         source = ACTIVE_DOCUMENT.view.substr(

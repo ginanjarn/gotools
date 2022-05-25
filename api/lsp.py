@@ -775,6 +775,12 @@ class LSPClient:
             RPCMessage.request(self.get_request_id(), "initialize", params)
         )
 
+    def initialized(self):
+        LOGGER.info("initialized")
+        params = {}
+        self.transport.notify(RPCMessage.notification("initialized", params))
+        self.is_initialized = True
+
     def textDocument_didOpen(self, file_name: str, source: str):
         LOGGER.info("textDocument_didOpen")
 
