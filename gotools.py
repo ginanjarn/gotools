@@ -706,6 +706,26 @@ class GoplsClient(lsp.LSPClient):
         self.completion_commit_character = []
         self.initialize_options = {}
 
+        self.pool_request_thread = threading.Thread(target=self._pool_request_task)
+
+    def _pool_request_task(self):
+        """_pool_request_task check if 'gopls' didn't respond request"""
+        LOGGER.info("pool pending request")
+
+        while True:
+            # pool every 3 minutes
+            time.sleep(3 * 60)
+
+            try:
+                pending_count = len(self.transport.request_map)
+            except Exception:
+                # maybe server terminated
+                return
+
+            # restart server if not responding request
+            if pending_count > 5:
+                ACTIVE_DOCUMENT.view.run_command("gotools_restart_server")
+
     def run_server(self, gopls="gopls", *args):
         """run gopls server
 
@@ -723,6 +743,9 @@ class GoplsClient(lsp.LSPClient):
         self.transport = StandardIO(commands)
         self._register_commands()
         self.server_running = True
+
+        # start pool request
+        self.pool_request_thread.start()
 
     def _hide_completion(self, character: str):
         LOGGER.info("_hide_completion")
