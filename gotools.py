@@ -4,6 +4,7 @@ import dataclasses
 import datetime
 import logging
 import os
+import re
 import threading
 import time
 
@@ -450,6 +451,9 @@ class ActiveDocument:
     def hide_completion(self):
         self.view.run_command("hide_auto_complete")
 
+    _start_pre_code_pattern = re.compile(r"^<pre><code.*>")
+    _end_pre_code_pattern = re.compile(r"</code></pre>$")
+
     @staticmethod
     def adapt_minihtml(lines: str) -> Iterator[str]:
         """adapt sublime minihtml tag
@@ -459,13 +463,14 @@ class ActiveDocument:
         pre_tag = False
         for line in lines.splitlines():
 
-            if line.startswith("<pre>"):
+            if open_pre := ActiveDocument._start_pre_code_pattern.match(line):
+                line = "<div class='code_block'>%s" % line[open_pre.end() :]
                 pre_tag = True
-            elif pre_tag and line.endswith("</pre>"):
+
+            if closing_pre := ActiveDocument._end_pre_code_pattern.search(line):
+                line = "%s</div>" % line[: closing_pre.start()]
                 pre_tag = False
 
-            line = line.replace("<pre>", "<div class='code_block'>")
-            line = line.replace("</pre>", "</div>")
             line = line.replace("  ", "&nbsp;&nbsp;")
             line = f"{line}<br />" if pre_tag else line
 
@@ -484,19 +489,29 @@ class ActiveDocument:
             return
 
         if kind == "markdown":
-            contents = mistune.html(contents)
+            contents = mistune.markdown(contents, escape=False)
 
-        style = """\
+        style = """
         body {
             font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
-            line-height: 1.5;
+            margin: 0, 0.8em, 0.8em, 0.8em;
         }
-        code {
+        code, .code_block {
             background-color: color(var(--background) alpha(0.8));
             font-family: ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,Liberation Mono,monospace;
+            border-radius: 0.4em;
         }
+
+        code {
+            padding: 0 0.2em 0 0.2em;
+        }
+
         .code_block {
-            background-color: color(var(--background) alpha(0.8));
+            padding: 0.4em;
+        }
+        
+        ol, ul {
+            padding-left: 1em;
         }
         """
         contents = "\n".join(self.adapt_minihtml(contents))
