@@ -494,7 +494,7 @@ class ActiveDocument:
         style = """
         body {
             font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
-            margin: 0, 0.8em, 0.8em, 0.8em;
+            margin: 0.8em;
         }
         code, .code_block {
             background-color: color(var(--background) alpha(0.8));
