@@ -9,6 +9,8 @@ import threading
 import time
 
 from collections import OrderedDict
+from functools import lru_cache
+from itertools import chain
 from typing import List, Union, Dict, Iterator, Iterable
 
 import sublime
@@ -69,7 +71,7 @@ class CompletionList(sublime.CompletionList):
         """build completion item"""
 
         try:
-            trigger = item.get("filterText", item["label"])
+            trigger = item["label"]
             annotation = item.get("detail", "")
             kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
             text_changes = item["textEdit"]
@@ -78,7 +80,7 @@ class CompletionList(sublime.CompletionList):
             raise ValueError(f"error build completion from {item}") from err
 
         # remove snippet
-        text_changes["newText"] = item["label"]
+        # text_changes["newText"] = item["label"]
 
         additional_text_edits = item.get("additionalTextEdits")
         if additional_text_edits is not None:
@@ -101,6 +103,41 @@ class CompletionList(sublime.CompletionList):
             kind=kind,
         )
 
+    @staticmethod
+    @lru_cache
+    def load_snippets():
+        """load snippets"""
+
+        def build_completion(completion):
+            return sublime.CompletionItem.snippet_completion(
+                trigger=completion["trigger"],
+                snippet=completion["contents"],
+                annotation=completion.get("annotation", ""),
+                kind=sublime.KIND_SNIPPET,
+            )
+
+        try:
+            path = os.path.join(
+                sublime.packages_path(), "gotools", "Go.sublime-completions"
+            )
+            with open(path, "r") as file:
+                # use sublime json decoded
+                objects = sublime.decode_value(file.read())
+
+        except Exception as err:
+            LOGGER.error(f"load snippets error {err}")
+            return []
+
+        try:
+            completions = [
+                build_completion(completion) for completion in objects["completions"]
+            ]
+        except Exception as err:
+            LOGGER.error(f"parse snippets error {err}")
+            return []
+
+        return completions
+
     @classmethod
     def from_rpc(cls, completion_items: List[dict]):
         """load from rpc"""
@@ -115,6 +152,8 @@ class CompletionList(sublime.CompletionList):
         completions = [
             cls.build_completion(completion) for completion in completion_items
         ]
+
+        completions = list(chain(completions, cls.load_snippets()))
 
         return cls(
             completions=completions if completion_items else [],

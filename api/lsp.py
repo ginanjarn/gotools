@@ -551,7 +551,7 @@ class LSPClient:
                         "dynamicRegistration": True,
                         "contextSupport": True,
                         "completionItem": {
-                            "snippetSupport": True,
+                            "snippetSupport": False,
                             "commitCharactersSupport": True,
                             "documentationFormat": ["markdown", "plaintext"],
                             "deprecatedSupport": True,
@@ -565,7 +565,7 @@ class LSPClient:
                                     "additionalTextEdits",
                                 ]
                             },
-                            "insertTextModeSupport": {"valueSet": [1, 2]},
+                            "insertTextModeSupport": {"valueSet": [1]},
                         },
                         "completionItemKind": {
                             "valueSet": [

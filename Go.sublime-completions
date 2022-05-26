@@ -1,0 +1,41 @@
+{
+    "scope": "source.go",
+    "completions": [
+        {
+            "trigger": "make",
+            "annotation": "make(type, 0)",
+            "contents": "make(${1:type}, ${2:0})",
+            "kind": "snippet"
+        },
+        {
+            "trigger": "map",
+            "annotation": "map[type]type",
+            "contents": "map[${1:type}]${2:type}",
+            "kind": "snippet"
+        },
+        {
+            "trigger": "func",
+            "annotation": "func name(){}",
+            "contents": "func ${1:name}(${2:}){\n\t${0:}\n}",
+            "kind": "snippet"
+        },
+        {
+            "trigger": "defunc",
+            "annotation": "defer func(){}",
+            "contents": "defer func(){\n\t${0:}\n}",
+            "kind": "snippet"
+        },
+        {
+            "trigger": "httpfunc",
+            "annotation": "func handler(writer http.ResponseWriter, request *http.Request){}",
+            "contents": "func ${1:handler}(writer http.ResponseWriter, request *http.Request){\n\t${2:}\n}",
+            "kind": "snippet"
+        },
+        {
+            "trigger": "mainfunc",
+            "annotation": "func main(){}",
+            "contents": "func main(){\n\t${1:// code}\n}",
+            "kind": "snippet"
+        }
+    ]
+}
