@@ -745,7 +745,7 @@ class GoplsClient(lsp.LSPClient):
         self.completion_commit_character = []
         self.initialize_options = {}
 
-    def run_server(self, gopls="gopls", *args):
+    def run_server(self):
         """run gopls server
 
         Raises:
@@ -753,11 +753,10 @@ class GoplsClient(lsp.LSPClient):
         """
 
         sublime.status_message("starting 'gopls'")
+        commands = ["gopls"]
 
-        commands = [gopls]
-        if LOGGER.level > logging.WARNING:
+        if LOGGER.level == logging.DEBUG:
             commands.extend(["-rpc.trace", "-vv"])
-        commands.extend(args)
 
         self.transport = StandardIO(commands)
         self._register_commands()
