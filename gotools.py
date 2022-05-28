@@ -963,6 +963,10 @@ class GoplsClient(lsp.LSPClient):
         LOGGER.info(f"handle_client_registerCapability: {message}")
         self.transport.respond(lsp.RPCMessage.response(message["id"], result=""))
 
+    def handle_client_unregisterCapability(self, message: lsp.RPCMessage):
+        LOGGER.info(f"handle_client_unregisterCapability: {message}")
+        self.transport.respond(lsp.RPCMessage.response(message["id"], result=""))
+
     def handle_textDocument_prepareRename(self, message: lsp.RPCMessage):
         LOGGER.info(f"handle_textDocument_prepareRename: {message}")
 
@@ -1250,9 +1254,13 @@ class EventListener(sublime_plugin.EventListener):
         finally:
             Diagnostics(file_name).destroy_panel()
 
-    def on_post_save_async(self, view: sublime.View) -> None:
+    def on_pre_save_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
         if not (valid_source(view) and GOPLS_CLIENT.is_initialized):
+            return
+
+        # view not modified
+        if not view.is_dirty():
             return
 
         try:
@@ -1279,7 +1287,7 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
             file_name = self.buffer.file_name()
             LOGGER.debug(f"notify change for {file_name}\n{content_changes}")
 
-            GOPLS_CLIENT.cancelRequest()
+            # GOPLS_CLIENT.cancelRequest()
             GOPLS_CLIENT.textDocument_didChange(file_name, content_changes)
         except ServerOffline:
             pass

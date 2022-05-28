@@ -349,6 +349,9 @@ class LSPClient:
     def handle_client_registerCapability(self, params: RPCMessage):
         """handle client registerCapability"""
 
+    def handle_client_unregisterCapability(self, params: RPCMessage):
+        """handle client unregisterCapability"""
+
     def handle_textDocument_documentLink(self, params: RPCMessage):
         """handle document link"""
 
@@ -438,6 +441,9 @@ class LSPClient:
         )
         self.transport.register_command(
             "client/registerCapability", self.handle_client_registerCapability
+        )
+        self.transport.register_command(
+            "client/unregisterCapability", self.handle_client_unregisterCapability
         )
         self.transport.register_command(
             "textDocument/prepareRename", self.handle_textDocument_prepareRename
@@ -791,18 +797,28 @@ class LSPClient:
             LOGGER.debug("document already opened")
             return
 
+        change_watched_files = False
+        if os.path.dirname(self.active_document) != os.path.dirname(file_name):
+            change_watched_files = True
+
         self.active_document = file_name
         self.source = source
 
         params = {
             "textDocument": {
-                "languageId": "cpp",
+                "languageId": "go",
                 "text": source,
                 "uri": DocumentURI.from_path(file_name),
                 "version": self.get_document_version(file_name, reset=True),
             }
         }
         self.transport.notify(RPCMessage.notification("textDocument/didOpen", params))
+
+        if change_watched_files:
+            params = {
+                "changes": [{"uri": DocumentURI.from_path(file_name), "type": 1,}]
+            }
+            self.workspace_didChangeWatchedFiles(params)
 
     def _hide_completion(self, characters: str):
         pass
@@ -839,6 +855,10 @@ class LSPClient:
 
         if not self.server_running:
             raise ServerOffline
+
+        if file_name not in self.document_version_map:
+            LOGGER.debug(f"{file_name} not opened")
+            return
 
         params = {"textDocument": {"uri": DocumentURI.from_path(file_name)}}
         self.transport.notify(RPCMessage.notification("textDocument/didSave", params))
@@ -959,6 +979,15 @@ class LSPClient:
             RPCMessage.request(
                 self.get_request_id(), "workspace/executeCommand", params
             )
+        )
+
+    def workspace_didChangeWatchedFiles(self, params: list):
+
+        if not self.server_running:
+            raise ServerOffline
+
+        self.transport.notify(
+            RPCMessage.notification("workspace/didChangeWatchedFiles", params)
         )
 
     def textDocument_prepareRename(self, file_name, row, col):
