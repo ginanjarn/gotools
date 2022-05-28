@@ -76,10 +76,9 @@ class RPCMessage(dict):
 
     @staticmethod
     def get_content_length(s: str):
-        match = RPCMessage._content_length_pattern.match(s)
-        if match:
-            return int(match.group(1))
-        raise ValueError(f"Unable get Content-Length from \n'{s}'")
+        if found := RPCMessage._content_length_pattern.search(s):
+            return int(found.group(1))
+        raise ValueError("unable find Content-Length")
 
     @classmethod
     def from_bytes(cls, b: bytes, /):
@@ -168,21 +167,13 @@ class Stream:
         with self._lock:
             self.buffer.append(data)
 
-    _content_length_pattern = re.compile(r"^Content-Length: (\d+)")
+    _content_length_pattern = re.compile(r"^Content-Length: (\d+)", flags=re.MULTILINE)
 
     def _get_content_length(self, headers: bytes) -> int:
-        """get Content-Length
+        """get Content-Length"""
 
-        Raises:
-        -------
-        ValueError
-        """
-
-        for line in headers.splitlines():
-            match = self._content_length_pattern.match(line.decode("ascii"))
-            if match:
-                return int(match.group(1))
-
+        if found := self._content_length_pattern.search(headers.decode("ascii")):
+            return int(found.group(1))
         raise ValueError("unable find Content-Length")
 
     def get_content(self) -> bytes:
@@ -248,8 +239,16 @@ class AbstractTransport(ABC):
         """cancel request"""
 
     @abstractmethod
+    def respond(self, message: RPCMessage):
+        """respond request"""
+
+    @abstractmethod
     def register_command(self, method: str, callable: Callable[[RPCMessage], None]):
         """register command"""
+
+    @abstractmethod
+    def handle_received_message(self, message: RPCMessage):
+        """handle received message"""
 
     @abstractmethod
     def terminate(self):
@@ -1057,19 +1056,14 @@ class StandardIO(AbstractTransport):
 
         # init process
         self.server_process: subprocess.Popen = self._init_process(process_cmd)
-
         self.command_map = {}
-
-        # listener
-        self.stdout_thread: threading.Thread = None
-        self.stderr_thread: threading.Thread = None
         self.listen()
 
-        # request
+        # hold request method map
         self.request_map = {}
 
     def register_command(self, method: str, handler: Callable[[RPCMessage], None]):
-        LOGGER.info("register_command")
+        LOGGER.info(f"register_command {method}")
         self.command_map[method] = handler
 
     def _init_process(self, command):
@@ -1098,17 +1092,12 @@ class StandardIO(AbstractTransport):
             raise Exception(f"run server error: {err}") from err
         return process
 
-    def _write(self, message: RPCMessage):
-        LOGGER.info("_write to stdin")
+    def send_message(self, message: RPCMessage):
         LOGGER.debug(f"Send >> {message}")
 
         bmessage = message.to_bytes()
         self.server_process.stdin.write(bmessage)
         self.server_process.stdin.flush()
-
-    def send_message(self, message: RPCMessage):
-        """send message to server"""
-        self._write(message)
 
     def notify(self, message: RPCMessage):
         LOGGER.info("notify")
@@ -1133,57 +1122,59 @@ class StandardIO(AbstractTransport):
 
         self.request_map = {}
 
-    def _process_response_message(self, message: RPCMessage):
+    def handle_received_message(self, message: RPCMessage):
+        """handle received message"""
 
         method = message.get("method")
         message_id = message.get("id")
-        if method:
-            # exec server command
+
+        if not method:
+            # if no method, find method in request_map
+            try:
+                method = self.request_map.pop(message_id)
+            except KeyError as err:
+                raise ValueError(
+                    f"invalid response, {message_id} not in {self.request_map}"
+                ) from err
+
+        try:
             func = self.command_map[method]
-        elif message_id is not None:
-            # exec request command
-            method = self.request_map.pop(message_id)
-            func = self.command_map[method]
-        else:
-            raise InvalidMessage
+        except KeyError as err:
+            raise ValueError(f"method not found {err}") from err
+
         try:
             func(message)
         except Exception as err:
-            raise Exception(
-                f"execute message error, method: {method}, params: {message}"
-            ) from err
+            raise Exception(f"error execute {method}({message})") from err
+
+    def _process_stream(self, stream: Stream):
+        """process stream"""
+
+        while True:
+            content = stream.get_content()
+            message = RPCMessage.from_str(content.decode())
+            LOGGER.debug(f"Received << {message}")
+
+            try:
+                self.handle_received_message(message)
+
+            except Exception:
+                LOGGER.error("error process message", exc_info=True)
 
     def _listen_stdout(self):
         """listen stdout task"""
 
-        stdout = self.server_process.stdout
         stream = Stream()
 
-        def process_stream():
-            """process buffered stream"""
-            while True:
-                content = stream.get_content()
-                if not content:
-                    continue
-                message = RPCMessage.from_str(content)
-                LOGGER.debug(f"Received << {message}")
-                try:
-                    self._process_response_message(message)
-                except KeyError as err:
-                    message_id = message["id"]
-                    LOGGER.debug(f"{message_id} in {self.request_map}")
-                except Exception:
-                    LOGGER.error("error process message", exc_info=True)
-
         while True:
-            buf = stdout.read(self.BUFFER_LENGTH)
+            buf = self.server_process.stdout.read(self.BUFFER_LENGTH)
             if not buf:
                 LOGGER.debug("stdout closed")
                 return
 
             stream.put(buf)
             try:
-                process_stream()
+                self._process_stream(stream)
             except (EOFError, ContentIncomplete):
                 pass
             except Exception as err:
@@ -1193,24 +1184,24 @@ class StandardIO(AbstractTransport):
         """listen stderr task"""
 
         while True:
-            stderr = self.server_process.stderr
-            line = stderr.read(self.BUFFER_LENGTH)
-
-            if not line:
+            buf = self.server_process.stderr.read(self.BUFFER_LENGTH)
+            if not buf:
                 LOGGER.debug("stderr closed")
                 return
 
             try:
-                LOGGER.debug("stderr:\n%s", line)
+                LOGGER.debug("stderr:\n%s", buf)
             except UnicodeDecodeError as err:
                 LOGGER.error(err)
 
     def listen(self):
+        """listen PIPE"""
         LOGGER.info("listen")
-        self.stdout_thread = threading.Thread(target=self._listen_stdout, daemon=True)
-        self.stderr_thread = threading.Thread(target=self._listen_stderr, daemon=True)
-        self.stdout_thread.start()
-        self.stderr_thread.start()
+
+        stdout_thread = threading.Thread(target=self._listen_stdout, daemon=True)
+        stderr_thread = threading.Thread(target=self._listen_stderr, daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
 
     def terminate(self):
         """terminate process"""
