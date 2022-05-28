@@ -879,9 +879,9 @@ class GoplsClient(lsp.LSPClient):
 
         diagnostics = params["diagnostics"]
         document = Document(file_name)
-        document.clear_diagnostics()
 
         if not diagnostics:
+            document.clear_diagnostics()
             return
 
         document.apply_diagnostics(diagnostics)
