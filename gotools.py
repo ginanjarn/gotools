@@ -1097,6 +1097,7 @@ class EventListener(sublime_plugin.EventListener):
             LOGGER.error(f"run server error: {err}")
             sublime.status_message(f"run server error: {err}")
         else:
+            CANCEL_RUN_SERVER.reset()
             GOPLS_CLIENT.initialize(project_path)
 
     def on_query_completions(
@@ -1135,6 +1136,7 @@ class EventListener(sublime_plugin.EventListener):
         except ServerOffline:
             # delay for next run server
             if CANCEL_RUN_SERVER.is_canceled():
+                LOGGER.debug("run_server canceled")
                 return
             self._run_server(get_project_path(file_name))
 
@@ -1171,6 +1173,7 @@ class EventListener(sublime_plugin.EventListener):
         except ServerOffline:
             # delay for next run server
             if CANCEL_RUN_SERVER.is_canceled():
+                LOGGER.debug("run_server canceled")
                 return
             self._run_server(get_project_path(file_name))
 
