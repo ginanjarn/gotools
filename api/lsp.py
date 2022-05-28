@@ -8,7 +8,7 @@ import subprocess
 import threading
 from abc import ABC, abstractmethod
 from typing import Callable
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, quote, unquote
 from urllib.request import pathname2url, url2pathname
 
 LOGGER = logging.getLogger(__name__)
@@ -41,11 +41,11 @@ class DocumentURI(str):
     @classmethod
     def from_path(cls, file_name):
         """from file name"""
-        return cls(urlunparse(("file", "", pathname2url(file_name), "", "", "")))
+        return cls(urlunparse(("file", "", quote(pathname2url(file_name)), "", "", "")))
 
     def to_path(self) -> str:
         """convert to path"""
-        return url2pathname(urlparse(self).path)
+        return url2pathname(unquote(urlparse(self).path))
 
 
 class RPCMessage(dict):
