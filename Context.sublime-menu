@@ -1,4 +1,10 @@
-[
+[	
+	{
+		"caption" : "Show Code Action",
+		"mnemonic" : "A",
+		"id" : "gotools",
+		"command" : "gotools_code_action",
+	},
 	{
 		"caption" : "Format Code",
 		"mnemonic" : "F",
