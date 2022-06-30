@@ -1,7 +1,6 @@
 """gotools main app"""
 
 import dataclasses
-import datetime
 import logging
 import os
 import re
@@ -16,9 +15,8 @@ from typing import List, Union, Dict, Iterator, Iterable
 import sublime
 import sublime_plugin
 
-from .api import lsp
-from .api.lsp import StandardIO, ServerOffline, DocumentURI
 from .third_party import mistune
+from .api import lsp
 from .api import tools
 
 
@@ -78,9 +76,6 @@ class CompletionList(sublime.CompletionList):
 
         except Exception as err:
             raise ValueError(f"error build completion from {item}") from err
-
-        # remove snippet
-        # text_changes["newText"] = item["label"]
 
         additional_text_edits = item.get("additionalTextEdits")
         if additional_text_edits is not None:
@@ -143,10 +138,6 @@ class CompletionList(sublime.CompletionList):
         """load from rpc"""
 
         LOGGER.debug("completion_list: %s", completion_items)
-
-        # def sort_by_sortText(item):
-        #     st = item.get("sortText", 0)
-        #     return int(st)
 
         # completion_items.sort(key=sort_by_sortText)
         completions = [
@@ -572,7 +563,7 @@ class ActiveDocument:
 
         mapped_document_changes = OrderedDict()
         for change in document_changes:
-            file_name = DocumentURI(change["textDocument"]["uri"]).to_path()
+            file_name = lsp.DocumentURI(change["textDocument"]["uri"]).to_path()
             edits = change["edits"]
             mapped_document_changes[file_name] = edits
 
@@ -657,7 +648,7 @@ class ActiveDocument:
 
         def get_location(location: Dict[str, object]):
             try:
-                file_name = DocumentURI(location["uri"]).to_path()
+                file_name = lsp.DocumentURI(location["uri"]).to_path()
                 start = location["range"]["start"]
                 row, col = start["line"] + 1, start["character"] + 1
 
@@ -735,45 +726,14 @@ class Document:
 ACTIVE_DOCUMENT: ActiveDocument = ActiveDocument()
 
 
-class GoplsClient(lsp.LSPClient):
-    """LSP client listener"""
-
-    def __init__(self):
-        super().__init__()
-        self.transport: lsp.AbstractTransport = None
-
-        self.completion_commit_character = []
-        self.initialize_options = {}
-
-    def run_server(self):
-        """run gopls server
-
-        Raises:
-            OSError
-        """
-
-        sublime.status_message("starting 'gopls'")
-        commands = ["gopls"]
-
-        if LOGGER.level == logging.DEBUG:
-            commands.extend(["-rpc.trace", "-vv"])
-
-        self.transport = StandardIO(commands)
-        self._register_commands()
-        self.server_running = True
+class GoplsHandler(lsp.BaseHandler):
+    """LSP client handler"""
 
     def _hide_completion(self, character: str):
         LOGGER.info("_hide_completion")
 
         if character in ";:!]})":
             ACTIVE_DOCUMENT.hide_completion()
-
-    def shutdown_server(self):
-        LOGGER.debug("shutdown_server")
-        if self.server_running:
-            self.reset_session()
-
-            sublime.status_message("'gopls' terminated")
 
     def handle_initialize(self, message: lsp.RPCMessage):
         LOGGER.info(f"handle_initialize: {message}")
@@ -785,16 +745,14 @@ class GoplsClient(lsp.LSPClient):
         if not message.result:
             return
 
-        # capabilities = message.result["capabilities"]
-
         # notify if initialized
-        self.initialized()
+        GOPLS_CLIENT.initialized()
 
         file_name = ACTIVE_DOCUMENT.view.file_name()
         source = ACTIVE_DOCUMENT.view.substr(
             sublime.Region(0, ACTIVE_DOCUMENT.view.size())
         )
-        self.textDocument_didOpen(file_name, source)
+        GOPLS_CLIENT.textDocument_didOpen(file_name, source)
 
     def handle_textDocument_completion(self, message: lsp.RPCMessage):
         LOGGER.info(f"handle_textDocument_completion: {message}")
@@ -861,21 +819,7 @@ class GoplsClient(lsp.LSPClient):
         LOGGER.info(f"handle_textDocument_publishDiagnostics: {message}")
 
         params = message.params
-        file_name = DocumentURI(params["uri"]).to_path()
-        # working_version = self.get_document_version(
-        #     file_name, reset=False, increment=False
-        # )
-        # document_version = params.get("version", -1)
-        # if document_version < 0:
-        #     LOGGER.debug(f"{file_name} not opened")
-        #     return
-
-        # if working_version != document_version:
-        #     LOGGER.debug(
-        #         "incompatible version, "
-        #         f"current: {working_version} != expected: {document_version}"
-        #     )
-        #     return
+        file_name = lsp.DocumentURI(params["uri"]).to_path()
 
         diagnostics = params["diagnostics"]
         document = Document(file_name)
@@ -888,11 +832,11 @@ class GoplsClient(lsp.LSPClient):
 
     def handle_workspace_configuration(self, message: lsp.RPCMessage):
         LOGGER.info(f"handle_workspace_configuration: {message}")
-        self.transport.respond(lsp.RPCMessage.response(message["id"], result=[{}]))
+        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message["id"], result=[{}]))
 
     def handle_window_workDoneProgress_create(self, message: lsp.RPCMessage):
         LOGGER.info(f"handle_window_workDoneProgress_create: {message}")
-        self.transport.respond(lsp.RPCMessage.response(message["id"], result=""))
+        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message["id"], result=""))
 
     def handle_window_showMessage(self, message: lsp.RPCMessage):
         LOGGER.info(f"handle_window_showMessage: {message}")
@@ -934,14 +878,29 @@ class GoplsClient(lsp.LSPClient):
                 ACTIVE_DOCUMENT.apply_text_document_changes(document_changes)
             except Exception as err:
                 LOGGER.error("error apply document_changes: %s", repr(err))
+            else:
+                GOPLS_CLIENT.send_response(
+                    lsp.RPCMessage.response(message["id"], result={"applied": True})
+                )
+
+    def handle_workspace_executeCommand(self, message: lsp.RPCMessage):
+        LOGGER.info(f"handle_workspace_executeCommand: {message}")
+        if message.error:
+            LOGGER.error(f"error: {message.error}")
+            return
+
+        # if no error result should be None
+        if message.result is not None:
+            LOGGER.info(f"workspace/executeCommand result={message.result}")
+            return
 
     def handle_client_registerCapability(self, message: lsp.RPCMessage):
         LOGGER.info(f"handle_client_registerCapability: {message}")
-        self.transport.respond(lsp.RPCMessage.response(message["id"], result=""))
+        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message["id"], result=""))
 
     def handle_client_unregisterCapability(self, message: lsp.RPCMessage):
         LOGGER.info(f"handle_client_unregisterCapability: {message}")
-        self.transport.respond(lsp.RPCMessage.response(message["id"], result=""))
+        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message["id"], result=""))
 
     def handle_textDocument_prepareRename(self, message: lsp.RPCMessage):
         LOGGER.info(f"handle_textDocument_prepareRename: {message}")
@@ -1000,7 +959,37 @@ class GoplsClient(lsp.LSPClient):
         ACTIVE_DOCUMENT.goto(message.result)
 
 
-GOPLS_CLIENT = GoplsClient()
+GOPLS_CLIENT = lsp.LSPClient(lsp.StandardIO("gopls", ["-vv"]), GoplsHandler())
+
+
+class ServerManager:
+    def __init__(self):
+        self.server_online = False
+
+    def run_server(self, func):
+        def wrapper(*args, **kwargs):
+            if self.server_online:
+                return func(*args, **kwargs)
+
+            self.run()
+            return None
+
+        return wrapper
+
+    def run(self):
+        GOPLS_CLIENT.run_server()
+
+        if GOPLS_CLIENT.server_running():
+            self.server_online = True
+            GOPLS_CLIENT.initialize(get_project_path(ACTIVE_DOCUMENT.view.file_name()))
+
+    def shutdown(self):
+        if GOPLS_CLIENT.server_running():
+            GOPLS_CLIENT.shutdown_server()
+            self.server_online = False
+
+
+SERVER_MANAGER = ServerManager()
 
 
 def plugin_loaded():
@@ -1012,7 +1001,8 @@ def plugin_loaded():
 
 
 def plugin_unloaded():
-    GOPLS_CLIENT.shutdown_server()
+    # SERVER_MANAGER.shutdown()
+    pass
 
 
 def get_project_path(file_name: str):
@@ -1055,49 +1045,8 @@ def valid_identifier(view: sublime.View, location: int):
     return True
 
 
-class CancelRunServer:
-    """Cancel run server handler"""
-
-    def __init__(self):
-        self.next_check = None
-        self.exp_base = 1
-
-    def reset(self):
-        self.next_check = None
-        self.exp_base = 1
-
-    def is_canceled(self):
-        if not self.next_check:
-            return False
-        if datetime.datetime.now() >= self.next_check:
-            return False
-        if self.exp_base > 5:
-            self.reset()
-        return True
-
-    def cancel(self):
-        delay = 10 ** self.exp_base
-        self.exp_base += 1
-        self.next_check = datetime.datetime.now() + datetime.timedelta(seconds=delay)
-        LOGGER.debug(f"next request at {self.next_check}")
-
-
-CANCEL_RUN_SERVER = CancelRunServer()
-
-
 class EventListener(sublime_plugin.EventListener):
     """sublime event listener"""
-
-    def _run_server(self, project_path):
-        CANCEL_RUN_SERVER.cancel()
-        try:
-            GOPLS_CLIENT.run_server()
-        except Exception as err:
-            LOGGER.error(f"run server error: {err}")
-            sublime.status_message(f"run server error: {err}")
-        else:
-            CANCEL_RUN_SERVER.reset()
-            GOPLS_CLIENT.initialize(project_path)
 
     def on_query_completions(
         self, view: sublime.View, prefix: str, locations: List[int]
@@ -1124,6 +1073,7 @@ class EventListener(sublime_plugin.EventListener):
         return None
 
     @pipe
+    @SERVER_MANAGER.run_server
     def on_query_completions_task(self, view, locations):
         file_name = view.file_name()
         row, col = view.rowcol(locations[0])
@@ -1132,12 +1082,8 @@ class EventListener(sublime_plugin.EventListener):
             ACTIVE_DOCUMENT.view = view
             GOPLS_CLIENT.textDocument_completion(file_name, row, col)
 
-        except ServerOffline:
-            # delay for next run server
-            if CANCEL_RUN_SERVER.is_canceled():
-                LOGGER.debug("run_server canceled")
-                return
-            self._run_server(get_project_path(file_name))
+        except lsp.NotInitialized:
+            GOPLS_CLIENT.initialize(get_project_path(file_name))
 
     def on_hover(self, view: sublime.View, point: int, hover_zone: int) -> None:
         if not valid_source(view):
@@ -1161,6 +1107,7 @@ class EventListener(sublime_plugin.EventListener):
         thread.start()
 
     @pipe
+    @SERVER_MANAGER.run_server
     def on_hover_text_task(self, view, point):
         file_name = view.file_name()
         row, col = view.rowcol(point)
@@ -1169,16 +1116,12 @@ class EventListener(sublime_plugin.EventListener):
             ACTIVE_DOCUMENT.view = view
             GOPLS_CLIENT.textDocument_hover(file_name, row, col)
 
-        except ServerOffline:
-            # delay for next run server
-            if CANCEL_RUN_SERVER.is_canceled():
-                LOGGER.debug("run_server canceled")
-                return
-            self._run_server(get_project_path(file_name))
+        except lsp.NotInitialized:
+            GOPLS_CLIENT.initialize(get_project_path(file_name))
 
     def on_load_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
-        if not (valid_source(view) and GOPLS_CLIENT.is_initialized):
+        if not (valid_source(view) and SERVER_MANAGER.server_online):
             return
 
         source = view.substr(sublime.Region(0, view.size()))
@@ -1186,25 +1129,15 @@ class EventListener(sublime_plugin.EventListener):
             GOPLS_CLIENT.textDocument_didOpen(file_name, source)
             # set current active view
             ACTIVE_DOCUMENT.view = view
-        except ServerOffline:
+        except lsp.NotInitialized:
             pass
 
     def on_reload_async(self, view: sublime.View) -> None:
-        file_name = view.file_name()
-        if not (valid_source(view) and GOPLS_CLIENT.is_initialized):
-            return
-
-        source = view.substr(sublime.Region(0, view.size()))
-        try:
-            GOPLS_CLIENT.textDocument_didOpen(file_name, source)
-            # set current active view
-            ACTIVE_DOCUMENT.view = view
-        except ServerOffline:
-            pass
+        self.on_load_async(view)
 
     def on_activated_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
-        if not (valid_source(view) and GOPLS_CLIENT.is_initialized):
+        if not (valid_source(view) and SERVER_MANAGER.server_online):
             return
 
         # show diagnostic
@@ -1216,26 +1149,26 @@ class EventListener(sublime_plugin.EventListener):
             GOPLS_CLIENT.textDocument_didOpen(file_name, source)
             # set current active view
             ACTIVE_DOCUMENT.view = view
-        except ServerOffline:
+        except lsp.NotInitialized:
             pass
 
     def on_close(self, view: sublime.View) -> None:
         file_name = view.file_name()
-        if not (valid_source(view) and GOPLS_CLIENT.is_initialized):
+        if not (valid_source(view) and SERVER_MANAGER.server_online):
             return
 
         try:
             GOPLS_CLIENT.textDocument_didClose(file_name)
             # reset active view
             ACTIVE_DOCUMENT.view = None
-        except ServerOffline:
+        except lsp.NotInitialized:
             pass
         finally:
             Diagnostics(file_name).destroy_panel()
 
     def on_pre_save_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
-        if not (valid_source(view) and GOPLS_CLIENT.is_initialized):
+        if not (valid_source(view) and SERVER_MANAGER.server_online):
             return
 
         # view not modified
@@ -1244,7 +1177,7 @@ class EventListener(sublime_plugin.EventListener):
 
         try:
             GOPLS_CLIENT.textDocument_didSave(file_name)
-        except ServerOffline:
+        except lsp.NotInitialized:
             pass
 
 
@@ -1256,7 +1189,7 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
         if not view.file_name():
             return
 
-        if not (GOPLS_CLIENT.is_initialized and valid_source(view)):
+        if not (SERVER_MANAGER.server_online and valid_source(view)):
             return
 
         LOGGER.info("on_text_changed_async")
@@ -1265,10 +1198,9 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
         try:
             file_name = self.buffer.file_name()
             LOGGER.debug(f"notify change for {file_name}\n{content_changes}")
-
-            # GOPLS_CLIENT.cancelRequest()
             GOPLS_CLIENT.textDocument_didChange(file_name, content_changes)
-        except ServerOffline:
+
+        except lsp.NotInitialized:
             pass
 
     @staticmethod
@@ -1290,21 +1222,21 @@ class GotoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         LOGGER.info("GotoolsDocumentFormattingCommand")
 
-        if valid_source(self.view) and GOPLS_CLIENT.is_initialized:
+        if valid_source(self.view) and SERVER_MANAGER.server_online:
             try:
                 GOPLS_CLIENT.textDocument_formatting(self.view.file_name())
-            except ServerOffline:
+            except lsp.NotInitialized:
                 pass
 
     def is_visible(self):
-        return valid_source(self.view) and GOPLS_CLIENT.is_initialized
+        return valid_source(self.view) and SERVER_MANAGER.server_online
 
 
 class GotoolsCodeActionCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         LOGGER.info("GotoolsCodeActionCommand")
 
-        if valid_source(self.view) and GOPLS_CLIENT.is_initialized:
+        if valid_source(self.view) and SERVER_MANAGER.server_online:
             location = self.view.sel()[0]
             start_row, start_col = self.view.rowcol(location.a)
             end_row, end_col = self.view.rowcol(location.b)
@@ -1313,47 +1245,47 @@ class GotoolsCodeActionCommand(sublime_plugin.TextCommand):
                 GOPLS_CLIENT.textDocument_codeAction(
                     self.view.file_name(), start_row, start_col, end_row, end_col
                 )
-            except ServerOffline:
+            except lsp.NotInitialized:
                 pass
 
     def is_visible(self):
-        return valid_source(self.view) and GOPLS_CLIENT.is_initialized
+        return valid_source(self.view) and SERVER_MANAGER.server_online
 
 
 class GotoolsWorkspaceExecCommandCommand(sublime_plugin.TextCommand):
     def run(self, edit, params):
         LOGGER.info("GotoolsWorkspaceExecCommandCommand")
 
-        if valid_source(self.view) and GOPLS_CLIENT.is_initialized:
+        if valid_source(self.view) and SERVER_MANAGER.server_online:
             try:
                 GOPLS_CLIENT.workspace_executeCommand(params)
-            except ServerOffline:
+            except lsp.NotInitialized:
                 pass
 
     def is_visible(self):
-        return valid_source(self.view) and GOPLS_CLIENT.is_initialized
+        return valid_source(self.view) and SERVER_MANAGER.server_online
 
 
 class GotoolsRenameCommand(sublime_plugin.TextCommand):
     def run(self, edit, row, col, new_name):
         LOGGER.info("GotoolsRenameCommand")
 
-        if valid_source(self.view) and GOPLS_CLIENT.is_initialized:
+        if valid_source(self.view) and SERVER_MANAGER.server_online:
             file_name = self.view.file_name()
             try:
                 GOPLS_CLIENT.textDocument_rename(file_name, row, col, new_name)
-            except ServerOffline:
+            except lsp.NotInitialized:
                 pass
 
     def is_visible(self):
-        return valid_source(self.view) and GOPLS_CLIENT.is_initialized
+        return valid_source(self.view) and SERVER_MANAGER.server_online
 
 
 class GotoolsPrepareRenameCommand(sublime_plugin.TextCommand):
     def run(self, edit, location=None):
         LOGGER.info("GotoolsPrepareRenameCommand")
 
-        if valid_source(self.view) and GOPLS_CLIENT.is_initialized:
+        if valid_source(self.view) and SERVER_MANAGER.server_online:
             file_name = self.view.file_name()
 
             if location is None:
@@ -1362,18 +1294,18 @@ class GotoolsPrepareRenameCommand(sublime_plugin.TextCommand):
             row, col = self.view.rowcol(location)
             try:
                 GOPLS_CLIENT.textDocument_prepareRename(file_name, row, col)
-            except ServerOffline:
+            except lsp.NotInitialized:
                 pass
 
     def is_visible(self):
-        return valid_source(self.view) and GOPLS_CLIENT.is_initialized
+        return valid_source(self.view) and SERVER_MANAGER.server_online
 
 
 class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
     def run(self, edit, location=None):
         LOGGER.info("GotoolsGotoDefinitionCommand")
 
-        if valid_source(self.view) and GOPLS_CLIENT.is_initialized:
+        if valid_source(self.view) and SERVER_MANAGER.server_online:
             file_name = self.view.file_name()
 
             if location is None:
@@ -1382,18 +1314,18 @@ class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
             row, col = self.view.rowcol(location)
             try:
                 GOPLS_CLIENT.textDocument_definition(file_name, row, col)
-            except ServerOffline:
+            except lsp.NotInitialized:
                 pass
 
     def is_visible(self):
-        return valid_source(self.view) and GOPLS_CLIENT.is_initialized
+        return valid_source(self.view) and SERVER_MANAGER.server_online
 
 
 class GotoolsGotoDeclarationCommand(sublime_plugin.TextCommand):
     def run(self, edit, location=None):
         LOGGER.info("GotoolsGotoDeclarationCommand")
 
-        if valid_source(self.view) and GOPLS_CLIENT.is_initialized:
+        if valid_source(self.view) and SERVER_MANAGER.server_online:
             file_name = self.view.file_name()
 
             if location is None:
@@ -1402,22 +1334,20 @@ class GotoolsGotoDeclarationCommand(sublime_plugin.TextCommand):
             row, col = self.view.rowcol(location)
             try:
                 GOPLS_CLIENT.textDocument_declaration(file_name, row, col)
-            except ServerOffline:
+            except lsp.NotInitialized:
                 pass
 
     def is_visible(self):
-        return valid_source(self.view) and GOPLS_CLIENT.is_initialized
+        return valid_source(self.view) and SERVER_MANAGER.server_online
 
 
 class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
     def run(self, edit, location=None):
         LOGGER.info("GotoolsRestartServerCommand")
-
-        if GOPLS_CLIENT.server_running:
-            GOPLS_CLIENT.shutdown_server()
+        SERVER_MANAGER.shutdown()
 
     def is_visible(self):
-        return GOPLS_CLIENT.server_running
+        return SERVER_MANAGER.server_online
 
 
 class GotoolsInstallToolsCommand(sublime_plugin.TextCommand):
