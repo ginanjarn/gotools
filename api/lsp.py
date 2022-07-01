@@ -1047,6 +1047,15 @@ class LSPClient(Commands):
         func(params)
 
     def send_request(self, message: RPCMessage):
+        if self.request_map:
+            canceled_id = None
+            for req_id, method in self.request_map.items():
+                if message["method"] == method:
+                    canceled_id = req_id
+
+            if canceled_id is not None:
+                self.cancel_request(canceled_id)
+
         self.request_map[message["id"]] = message["method"]
         self.transport.send_message(message)
 
