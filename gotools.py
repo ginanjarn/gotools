@@ -1,21 +1,22 @@
-"""gotools main app"""
+"""gotools main"""
 
-import dataclasses
 import logging
 import os
 import re
 import threading
 import time
 
-from collections import OrderedDict
-from functools import lru_cache
-from itertools import chain
-from typing import List, Union, Dict, Iterator, Iterable
+from dataclasses import dataclass
+from functools import wraps
+from io import StringIO
+from pathlib import Path
+from typing import List, Iterator
 
 import sublime
 import sublime_plugin
-
 from .third_party import mistune
+
+from .api import file_watcher
 from .api import lsp
 from .api import tools
 
@@ -28,445 +29,361 @@ STREAM_HANDLER.setFormatter(logging.Formatter(LOG_TEMPLATE))
 LOGGER.addHandler(STREAM_HANDLER)
 
 
+class StatusMessage:
+    """handle status message"""
+
+    status_key = "gotools_status"
+
+    def set_status(self, message: str):
+        view: sublime.View = sublime.active_window().active_view()
+        view.set_status(self.status_key, f"$_{message} ")
+
+    def reset_status(self):
+        view: sublime.View = sublime.active_window().active_view()
+        view.erase_status(self.status_key)
+
+    def show_message(self, message: str):
+        window: sublime.Window = sublime.active_window()
+        window.status_message(message)
+
+
+STATUS_MESSAGE = StatusMessage()
+
+
+@dataclass
+class TextChangeItem:
+    """Text change item"""
+
+    region: sublime.Region
+    text: str
+    offset_move: int = 0
+
+    def get_region(self, offset_move: int, /) -> sublime.Region:
+        """get region adapted with cursor movement"""
+        return sublime.Region(self.region.a + offset_move, self.region.b + offset_move)
+
+    @classmethod
+    def from_rpc(cls, view: sublime.View, change: dict, /):
+        start = change["range"]["start"]
+        end = change["range"]["end"]
+        new_text = change["newText"]
+
+        start_point = view.text_point_utf16(start["line"], start["character"])
+        end_point = view.text_point_utf16(end["line"], end["character"])
+
+        region = sublime.Region(start_point, end_point)
+        move = len(new_text) - region.size()
+        return cls(region, new_text, move)
+
+
+TEXT_CHANGE_SYNC = threading.Lock()
+
+
+class GotoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
+    """apply text changes"""
+
+    def run(self, edit: sublime.Edit, text_changes: List[dict]):
+        LOGGER.debug(f"apply_text_changes: {text_changes}")
+        if not text_changes:
+            return
+
+        try:
+            TEXT_CHANGE_SYNC.acquire()
+            text_changes = [
+                TextChangeItem.from_rpc(self.view, change) for change in text_changes
+            ]
+        except Exception as err:
+            LOGGER.error(err, exc_info=True)
+        else:
+            self.apply_changes(edit, text_changes)
+        finally:
+            TEXT_CHANGE_SYNC.release()
+
+    def apply_changes(self, edit: sublime.Edit, changes: List[TextChangeItem]):
+        """apply text changes"""
+
+        move = 0
+        for change in changes:
+            region = change.get_region(move)
+            self.view.erase(edit, region)
+            self.view.insert(edit, region.a, change.text)
+            move += change.offset_move
+
+
+class FileChanges:
+    """handle unbuffered file change"""
+
+    def __init__(self, file_name: str):
+        self.file_name = file_name
+        self.buffer: StringIO = StringIO()
+
+    def apply_text_changes(self, text_changes: List[dict]):
+        # load
+        with open(self.file_name, "r") as file:
+            self.buffer = StringIO(file.read())
+
+        # apply
+        for change in text_changes:
+            self._apply_text_change(change)
+
+        # save
+        with open(self.file_name, "w") as file:
+            file.write(self.buffer.getvalue())
+
+    def _apply_text_change(self, change):
+        start = change["range"]["start"]
+        end = change["range"]["end"]
+        new_text = change["newText"]
+
+        start_line, start_character = start["line"], start["character"]
+        end_line, end_character = end["line"], end["character"]
+
+        new_buf = StringIO()
+        for index, line in enumerate(self.buffer.readlines()):
+
+            if index < start_line:
+                new_buf.write(line)
+                continue
+
+            if index > end_line:
+                new_buf.write(line)
+                continue
+
+            if index == start_line:
+                new_buf.write(line[:start_character])
+                new_buf.write(new_text)
+
+            if index == end_line:
+                new_buf.write(line[end_character:])
+
+        self.buffer = new_buf
+
+
+class GotoolsApplyCompletionCommand(sublime_plugin.TextCommand):
+    """apply completion"""
+
+    def run(
+        self, edit: sublime.Edit, text_edit: dict, additional_text_edit: List[dict]
+    ):
+        # gopls apply additional changes after completion applied
+        self.view.run_command(
+            "gotools_apply_text_changes", {"text_changes": [text_edit]}
+        )
+        self.view.run_command(
+            "gotools_apply_text_changes", {"text_changes": additional_text_edit}
+        )
+
+
 # custom kind
 KIND_PATH = (sublime.KIND_ID_NAVIGATION, "p", "")
 KIND_VALUE = (sublime.KIND_ID_NAVIGATION, "u", "")
 
-_KIND_MAP = {
-    1: sublime.KIND_NAVIGATION,
-    2: sublime.KIND_FUNCTION,
-    3: sublime.KIND_FUNCTION,
-    4: sublime.KIND_FUNCTION,
-    5: sublime.KIND_VARIABLE,
-    6: sublime.KIND_VARIABLE,
-    7: sublime.KIND_TYPE,
-    8: sublime.KIND_TYPE,
-    9: sublime.KIND_NAMESPACE,
-    10: sublime.KIND_VARIABLE,
-    11: KIND_VALUE,
-    12: KIND_VALUE,
-    13: sublime.KIND_TYPE,
-    14: sublime.KIND_KEYWORD,
-    15: sublime.KIND_SNIPPET,
-    16: KIND_VALUE,
-    17: KIND_PATH,
-    18: sublime.KIND_NAVIGATION,
-    19: KIND_PATH,
-    20: sublime.KIND_VARIABLE,
-    21: sublime.KIND_VARIABLE,
-    22: sublime.KIND_TYPE,
-    23: sublime.KIND_AMBIGUOUS,
-    24: sublime.KIND_MARKUP,
-    25: sublime.KIND_TYPE,
-}
 
+class CompletionItem(sublime.CompletionItem):
+    """completion item"""
 
-class CompletionList(sublime.CompletionList):
-    """CompletionList"""
-
-    @staticmethod
-    def build_completion(item: Dict[str, object]):
-        """build completion item"""
-
-        try:
-            trigger = item["label"]
-            annotation = item.get("detail", "")
-            kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
-            text_changes = item["textEdit"]
-
-        except Exception as err:
-            raise ValueError(f"error build completion from {item}") from err
-
-        additional_text_edits = item.get("additionalTextEdits")
-        if additional_text_edits is not None:
-            return sublime.CompletionItem.command_completion(
-                trigger=trigger,
-                command="gotools_apply_completion",
-                args={
-                    "completion": text_changes,
-                    "additional_changes": additional_text_edits,
-                },
-                annotation=annotation,
-                kind=kind,
-            )
-
-        # default
-        return sublime.CompletionItem(
-            trigger=trigger,
-            annotation=annotation,
-            completion=text_changes["newText"],
-            kind=kind,
-        )
-
-    @staticmethod
-    @lru_cache
-    def load_snippets():
-        """load snippets"""
-
-        def build_completion(completion):
-            return sublime.CompletionItem.snippet_completion(
-                trigger=completion["trigger"],
-                snippet=completion["contents"],
-                annotation=completion.get("annotation", ""),
-                kind=sublime.KIND_SNIPPET,
-            )
-
-        try:
-            path = os.path.join(
-                sublime.packages_path(), "gotools", "Go.sublime-completions"
-            )
-            with open(path, "r") as file:
-                # use sublime json decoded
-                objects = sublime.decode_value(file.read())
-
-        except Exception as err:
-            LOGGER.error(f"load snippets error {err}")
-            return []
-
-        try:
-            completions = [
-                build_completion(completion) for completion in objects["completions"]
-            ]
-        except Exception as err:
-            LOGGER.error(f"parse snippets error {err}")
-            return []
-
-        return completions
-
-    @classmethod
-    def from_rpc(cls, completion_items: List[dict]):
-        """load from rpc"""
-
-        LOGGER.debug("completion_list: %s", completion_items)
-
-        # completion_items.sort(key=sort_by_sortText)
-        completions = [
-            cls.build_completion(completion) for completion in completion_items
-        ]
-
-        completions = list(chain(completions, cls.load_snippets()))
-
-        return cls(
-            completions=completions if completion_items else [],
-            flags=sublime.INHIBIT_WORD_COMPLETIONS
-            | sublime.INHIBIT_EXPLICIT_COMPLETIONS
-            # | sublime.INHIBIT_REORDER,
-        )
-
-
-class GotoolsApplyCompletionCommand(sublime_plugin.TextCommand):
-    def run(self, edit, completion, additional_changes):
-        # gopls insert completion at first
-        completion["range"]["end"] = completion["range"]["start"]
-        self.view.run_command(
-            "gotools_apply_document_change", {"changes": [completion]}
-        )
-        self.view.run_command(
-            "gotools_apply_document_change", {"changes": additional_changes}
-        )
-
-
-@dataclasses.dataclass
-class DiagnosticItem:
-    """diagnostic item"""
-
-    region: sublime.Region
-    severity: int
-    message: str
-    raw_data: Dict[str, object]
-
-    @classmethod
-    def from_rpc(cls, view: sublime.View, diagnostic: Dict[str, object], /):
-        """from rpc"""
-        try:
-            range_ = diagnostic["range"]
-            start = view.text_point(
-                range_["start"]["line"], range_["start"]["character"]
-            )
-            end = view.text_point(range_["end"]["line"], range_["end"]["character"])
-
-            severity = diagnostic["severity"]
-            message = diagnostic["message"]
-            region = sublime.Region(start, end)
-
-        except Exception as err:
-            raise ValueError(f"error loading diagnostic from rpc: {err}") from err
-
-        return cls(region, severity, message, diagnostic)
-
-
-class Diagnostics:
-    """Diagnostic hold diagnostic data at view"""
-
-    REGION_KEYS = {
-        1: "gotools.error",
-        2: "gotools.warning",
-        3: "gotools.information",
-        4: "gotools.hint",
+    KIND_MAP = {
+        1: sublime.KIND_NAVIGATION,
+        2: sublime.KIND_FUNCTION,
+        3: sublime.KIND_FUNCTION,
+        4: sublime.KIND_FUNCTION,
+        5: sublime.KIND_VARIABLE,
+        6: sublime.KIND_VARIABLE,
+        7: sublime.KIND_TYPE,
+        8: sublime.KIND_TYPE,
+        9: sublime.KIND_NAMESPACE,
+        10: sublime.KIND_VARIABLE,
+        11: KIND_VALUE,
+        12: KIND_VALUE,
+        13: sublime.KIND_TYPE,
+        14: sublime.KIND_KEYWORD,
+        15: sublime.KIND_SNIPPET,
+        16: KIND_VALUE,
+        17: KIND_PATH,
+        18: sublime.KIND_NAVIGATION,
+        19: KIND_PATH,
+        20: sublime.KIND_VARIABLE,
+        21: sublime.KIND_VARIABLE,
+        22: sublime.KIND_TYPE,
+        23: sublime.KIND_AMBIGUOUS,
+        24: sublime.KIND_MARKUP,
+        25: sublime.KIND_TYPE,
     }
 
-    # Diagnostic severity
-    ERROR = 1
-    WARNING = 2
-    INFO = 3
-    HINT = 4
+    @classmethod
+    def from_rpc(cls, item: dict):
+        """create from rpc"""
 
-    def __init__(self, file_name: str):
-        self.file_name = file_name
-        self.window = sublime.active_window()
-        self.view = self.window.find_open_file(file_name)
-        self.outputpanel_name = f"gotools:{file_name}"
+        label = item["label"]
+        filter_text = item.get("filterText", label)
+        kind = item["kind"]
+        annotation = item.get("detail", "")
 
-    def set_diagnostics(self, diagnostics: List[dict]):
-        """set diagnostic
+        text_edit = item["textEdit"]
+        additional_text_edit = item.get("additionalTextEdits", [])
 
-        * show message
-        * apply syntax highlight
-        """
+        # sublime remove prefix completion
+        text_edit["range"]["end"] = text_edit["range"]["start"]
 
-        diagnostic_items = [
-            DiagnosticItem.from_rpc(self.view, diagnostic) for diagnostic in diagnostics
-        ]
-
-        message_holder = []
-
-        for severity in (self.ERROR, self.WARNING, self.INFO, self.HINT):
-            filtered_diagnostics = [
-                diagnostic
-                for diagnostic in diagnostic_items
-                if diagnostic.severity == severity
-            ]
-
-            # add highlight
-            self.add_highlight(severity, filtered_diagnostics)
-
-            # create output message
-            messages = [
-                self._build_message(diagnostic) for diagnostic in filtered_diagnostics
-            ]
-            message_holder.extend(messages)
-
-        # create output panel
-        self.create_panel("\n".join(message_holder))
-
-    def add_highlight(self, severity: int, diagnostics: Iterable[DiagnosticItem]):
-        """add syntax highlight regions"""
-
-        key = self.REGION_KEYS[severity]
-        regions = [diagnostic.region for diagnostic in diagnostics]
-
-        self.view.add_regions(
-            key=key,
-            regions=regions,
-            scope="Comment",
-            icon="circle" if severity == self.ERROR else "dot",
-            flags=(
-                sublime.DRAW_NO_FILL
-                | sublime.DRAW_NO_OUTLINE
-                | sublime.DRAW_SQUIGGLY_UNDERLINE
-            ),
+        return cls.command_completion(
+            trigger=filter_text,
+            command="gotools_apply_completion",
+            args={"text_edit": text_edit, "additional_text_edit": additional_text_edit},
+            kind=cls.KIND_MAP.get(kind, sublime.KIND_AMBIGUOUS),
+            annotation=annotation,
         )
 
-    def _build_message(self, diagnostic: DiagnosticItem):
-        short_name = os.path.basename(self.view.file_name())
-        row, col = self.view.rowcol(diagnostic.region.begin())
-        return f"{short_name}:{row+1}:{col+1} {diagnostic.message}"
 
-    def erase_highlight(self):
-        """erase highlight"""
+class DiagnosticManager:
+    """manage project diagnostic"""
 
-        for _, value in self.REGION_KEYS.items():
-            self.view.erase_regions(value)
+    def __init__(self):
+        self.diagnostic_map = {}
 
-    def create_panel(self, message: str) -> None:
+    def set(self, view: sublime.View, file_name: str, diagnostics: List[dict]):
+        """set diagnostic"""
+
+        self.diagnostic_map[file_name] = diagnostics
+
+        # highlight text
+        self.higlight_text(view, diagnostics)
+        # show output panel
+        self.create_output_panel(file_name, diagnostics)
+        self.show_output_panel(file_name)
+
+    def higlight_text(self, view: sublime.View, diagnostics: List[dict]):
+        region_key = "gotools_errors"
+
+        # erase current regions
+        view.erase_regions(region_key)
+
+        def get_region(diagnostic) -> sublime.Region:
+            start = diagnostic["range"]["start"]
+            end = diagnostic["range"]["end"]
+            start_point = view.text_point_utf16(start["line"], start["character"])
+            end_point = view.text_point_utf16(end["line"], end["character"])
+            if start_point == end_point:
+                return view.line(start_point)
+            return sublime.Region(start_point, end_point)
+
+        regions = [get_region(diagnostic) for diagnostic in diagnostics]
+        view.add_regions(
+            key=region_key,
+            regions=regions,
+            scope="Comment",
+            icon="dot",
+            flags=sublime.DRAW_NO_OUTLINE
+            | sublime.DRAW_NO_FILL
+            | sublime.DRAW_SQUIGGLY_UNDERLINE,
+        )
+
+    def create_output_panel(self, file_name: str, diagnostics: List[dict]) -> None:
         """create output panel"""
 
-        panel = self.window.create_output_panel(self.outputpanel_name)
+        def build_message(diagnostic: dict):
+            short_name = os.path.basename(file_name)
+            row = diagnostic["range"]["start"]["line"]
+            col = diagnostic["range"]["start"]["character"]
+            message = diagnostic["message"]
+            source = diagnostic.get("source", "")
+
+            # natural line index start with 1
+            row += 1
+
+            return f"{short_name}:{row}:{col}: {message} ({source})"
+
+        message = "\n".join([build_message(diagnostic) for diagnostic in diagnostics])
+
+        panel_name = f"gotools_panel:{file_name}"
+        panel = sublime.active_window().create_output_panel(panel_name)
         panel.set_read_only(False)
         panel.run_command(
             "append", {"characters": message},
         )
 
-    def show_panel(self) -> None:
+    def show_output_panel(self, file_name: str) -> None:
         """show output panel"""
-        self.window.run_command(
-            "show_panel", {"panel": f"output.{self.outputpanel_name}"}
+
+        panel_name = f"gotools_panel:{file_name}"
+        sublime.active_window().run_command(
+            "show_panel", {"panel": f"output.{panel_name}"}
         )
 
-    def destroy_panel(self):
+    def get_diagnostics(self, file_name: str) -> List[dict]:
+        """get diagnostics for document"""
+        return self.diagnostic_map.get(file_name, [])
+
+    def destroy_output_panel(self, file_name: str):
         """destroy output panel"""
-        self.window.destroy_output_panel(self.outputpanel_name)
+
+        panel_name = f"gotools_panel:{file_name}"
+        sublime.active_window().destroy_output_panel(panel_name)
 
 
-@dataclasses.dataclass
-class ChangeItem:
-    """text change item"""
+DIAGNOSTIC_MANAGER = DiagnosticManager()
 
-    region: sublime.Region
-    old_text: str
-    new_text: str
 
-    @property
-    def cursor_move(self):
-        return len(self.new_text) - self.region.size()
+class ViewNotFoundError(ValueError):
+    """view not found in buffer"""
 
-    def get_region(self, cursor_move: int = 0):
-        """get region with adjusted position to cursor move"""
-        return sublime.Region(self.region.a + cursor_move, self.region.b + cursor_move)
+
+class Document:
+    """buffered document handler"""
+
+    def __init__(self, view: sublime.View):
+        self.view = view
+        self._cached_completions = None
 
     @classmethod
-    def from_rpc(cls, view: sublime.View, change: Dict[str, object], /):
-        """from rpc"""
+    def from_file(cls, file_name: str):
+        """create document from file"""
 
+        view = sublime.active_window().find_open_file(file_name)
+        if not view:
+            raise ViewNotFoundError(f"{repr(file_name)} not found in buffer")
+        return cls(view)
+
+    def save(self):
+        self.view.run_command("save", {"async": True})
+
+    def get_cached_completion(self):
+        completions = self._cached_completions
+        self._cached_completions = None
+        return completions
+
+    def file_name(self) -> str:
+        return self.view.file_name()
+
+    def source(self) -> str:
+        region = sublime.Region(0, self.view.size())
+        return self.view.substr(region)
+
+    def set_view(self, view: sublime.View):
+        self.view = view
+
+    def get_project_path(self) -> str:
+        file_name = self.file_name()
+        if not file_name:
+            raise ValueError("unable get filename")
+
+        path = Path(file_name)
+
+        # search go.mod up to 5 level parent directory
+        for _ in range(5):
+            path = path.parent
+            if mods := list(path.glob("./go.mod")):
+                return str(mods[0].parent)
+
+        raise ValueError("unable get project directory")
+
+    def show_completions(self, completions: List[dict]):
         try:
-            range_ = change["range"]
-            new_text = change["newText"]
-
-            start = view.text_point(
-                range_["start"]["line"], range_["start"]["character"]
-            )
-            end = view.text_point(range_["end"]["line"], range_["end"]["character"])
-
-        except Exception as err:
-            raise ValueError(f"error loading changes from rpc: {err}") from err
-
-        region = sublime.Region(start, end)
-        old_text = view.substr(region)
-        return cls(region, old_text, new_text)
-
-
-class DocumentChangeLock:
-    """Document change lock prevent multiple file changes at same time"""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-
-    def locked(self):
-        return self._lock.locked()
-
-    def acquire(self):
-        self._lock.acquire()
-
-    def release(self):
-        try:
-            self._lock.release()
-        except RuntimeError:
-            pass
-
-
-DOCUMENT_CHANGE_LOCK = DocumentChangeLock()
-
-
-class GotoolsApplyDocumentChangeCommand(sublime_plugin.TextCommand):
-    """apply document change to view"""
-
-    def run(self, edit: sublime.Edit, changes: list):
-        LOGGER.info(f"GotoolsApplyDocumentChangeCommand: {changes}")
-
-        list_change_item: List[ChangeItem] = [
-            ChangeItem.from_rpc(self.view, change) for change in changes
-        ]
-        try:
-            self.apply(edit, list_change_item)
+            items = [CompletionItem.from_rpc(item) for item in completions]
         except Exception as err:
             LOGGER.error(err, exc_info=True)
-
-    def apply(self, edit, list_change_item):
-        def sort_by_region(item: ChangeItem):
-            return item.region
-
-        # prevent change collision
-        list_change_item.sort(key=sort_by_region)
-
-        # this hold cursor movement
-        cursor_move = 0
-
-        for change in list_change_item:
-            region = change.get_region(cursor_move)
-            self.view.erase(edit, region)
-            self.view.insert(edit, region.a, change.new_text)
-            cursor_move += change.cursor_move
-
-        DOCUMENT_CHANGE_LOCK.release()
-
-
-class WindowProgress:
-    """window progress"""
-
-    def __init__(self):
-        self.status_key = "GOTOOLS_STATUS"
-        self.busy = False
-
-    def progress_task(self, title, message):
-        view = sublime.active_window().active_view()
-        while True:
-            for spin_char in "◓◑◒◐":
-                if not self.busy:
-                    return
-                view.set_status(self.status_key, f"{spin_char} {title}: {message}")
-                time.sleep(0.1)
-
-    def start(self, title: str, message: str, /):
-        self.busy = True
-        thread = threading.Thread(target=self.progress_task, args=(title, message))
-        thread.start()
-
-    def finish(self):
-        self.busy = False
-        for view in sublime.active_window().views():
-            view.erase_status(self.status_key)
-
-
-WINDOW_PROGRESS = WindowProgress()
-
-
-class ActiveDocument:
-    """commands to active view"""
-
-    def __init__(self):
-        self._completion_result = None
-        self._window: sublime.Window = None
-        self._view: sublime.View = None
-
-    @property
-    def window(self):
-        if self._window is None:
-            self.window = sublime.active_window()
-            return self._window
-        return self._window
-
-    @window.setter
-    def window(self, value):
-        self._window = value
-
-    @property
-    def view(self):
-        if self._view is None:
-            self._view = self.window.active_view()
-        return self._view
-
-    @view.setter
-    def view(self, value):
-        self._view = value
-
-    def get_completion_result(self):
-        result = self._completion_result
-        self._completion_result = None
-        return result
-
-    def show_completions(self, completions):
-        completions = completions["items"]
-        if not completions:
-            return
-
-        try:
-            completion_list = CompletionList.from_rpc(completions)
-            self._completion_result = completion_list
-        except Exception as err:
-            LOGGER.error(f"build completion error: {err}")
-            return
-
-        self.trigger_completion()
+        else:
+            self._cached_completions = items
+            self.trigger_completion()
 
     def trigger_completion(self):
         self.view.run_command(
@@ -493,11 +410,11 @@ class ActiveDocument:
         pre_tag = False
         for line in lines.splitlines():
 
-            if open_pre := ActiveDocument._start_pre_code_pattern.match(line):
+            if open_pre := Document._start_pre_code_pattern.match(line):
                 line = "<div class='code_block'>%s" % line[open_pre.end() :]
                 pre_tag = True
 
-            if closing_pre := ActiveDocument._end_pre_code_pattern.search(line):
+            if closing_pre := Document._end_pre_code_pattern.search(line):
                 line = "%s</div>" % line[: closing_pre.start()]
                 pre_tag = False
 
@@ -506,848 +423,750 @@ class ActiveDocument:
 
             yield line
 
-    def show_popup(self, documentation):
-
-        try:
-            contents = documentation["contents"]["value"]
-            kind = documentation["contents"]["kind"]
-            start = documentation["range"]["start"]
-            location = self.view.text_point(start["line"], start["character"])
-
-        except Exception as err:
-            LOGGER.error(f"show_popup param error: {err}")
-            return
-
-        if kind == "markdown":
-            contents = mistune.markdown(contents, escape=False)
+    def show_documentation(self, documentation: dict):
+        def show_popup(text, location):
+            self.view.show_popup(
+                content=text,
+                location=location,
+                max_width=720,
+                flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
+            )
 
         style = """
-        body {
-            font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
-            margin: 0.8em;
-        }
+        body { margin: 0.8em; font-family: BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
         code, .code_block {
             background-color: color(var(--background) alpha(0.8));
-            font-family: ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,Liberation Mono,monospace;
+            font-family: monospace;
             border-radius: 0.4em;
         }
-
-        code {
-            padding: 0 0.2em 0 0.2em;
-        }
-
-        .code_block {
-            padding: 0.4em;
-        }
-        
-        ol, ul {
-            padding-left: 1em;
-        }
+        code { padding: 0 0.2em 0 0.2em; }
+        .code_block { padding: 0.4em; }        
+        ol, ul { padding-left: 1em; }
         """
-        contents = "\n".join(self.adapt_minihtml(contents))
-        contents = f"<style>{style}</style>\n{contents}"
-        LOGGER.debug(contents)
-        self.view.show_popup(
-            contents,
-            flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
-            location=location,
-            max_width=1024,
-        )
 
-    def apply_text_document_changes(self, document_changes: List[Dict[str, dict]]):
-        LOGGER.info("apply_text_document_changes")
+        if contents := documentation.get("contents"):
+            line = documentation["range"]["start"]["line"]
+            character = documentation["range"]["start"]["character"]
+            point = self.view.text_point_utf16(line, character)
+            kind = contents.get("kind")
+            value = contents["value"]
 
-        if not document_changes:
-            LOGGER.debug("nothing changed")
+            value = (
+                mistune.markdown(value, escape=False) if kind == "markdown" else value
+            )
+            value = "\n".join(self.adapt_minihtml(value))
+
+            show_popup(f"<style>{style}</style>\n{value}", point)
+
+    def apply_text_changes(self, changes: List[dict]):
+        self.view.run_command("gotools_apply_text_changes", {"text_changes": changes})
+
+    def apply_diagnostics(self, diagnostics: List[dict]):
+        try:
+            DIAGNOSTIC_MANAGER.set(self.view, self.file_name(), diagnostics)
+        except Exception as err:
+            LOGGER.error(err, exc_info=True)
+
+
+class Workspace:
+    """handle multi document operation"""
+
+    def __init__(self):
+        self.watcher = file_watcher.Watcher()
+        self.working_files = set()
+
+    def set_project_root(self, path: str):
+        self.watcher.set_root_folder(path)
+        self.watcher.set_glob("*.go")
+
+        # poll available files
+        _ = list(self.watcher.poll())
+
+    def open_file(self, file_name: str, source: str = ""):
+        if file_name in self.working_files:
+            LOGGER.debug(f"{file_name} has opened")
             return
 
-        mapped_document_changes = OrderedDict()
+        self.working_files.add(file_name)
+        GOPLS_CLIENT.textDocument_didOpen(file_name, source)
+
+    def close_file(self, file_name: str):
+        try:
+            self.working_files.remove(file_name)
+        except KeyError:
+            # maybe file had buffered before initialize
+            pass
+
+        GOPLS_CLIENT.textDocument_didClose(file_name)
+
+    @property
+    def window(self) -> sublime.Window:
+        return sublime.active_window()
+
+    @property
+    def view(self) -> sublime.View:
+        return self.window.active_view()
+
+    def focus_view(self, view: sublime.View):
+        self.window.focus_view(view)
+
+    def notify_file_changes(self):
+        def build_item(change: file_watcher.ChangeItem):
+            return {
+                "uri": lsp.DocumentURI.from_path(change.file_name),
+                "type": change.change_type,
+            }
+
+        changes = [build_item(change) for change in self.watcher.poll()]
+
+        if changes:
+            try:
+                GOPLS_CLIENT.workspace_didChangeWatchedFiles(changes)
+            except lsp.NotInitialized:
+                pass
+
+    def show_code_actions(self, actions: List[dict]):
+        def build_title(action: dict):
+            title = action["title"]
+            kind = action["kind"]
+            return f"{title} ({kind})"
+
+        action_titles = [build_title(action) for action in actions]
+
+        def select_action(index=-1):
+            if index < 0:
+                return
+
+            if edit := actions[index].get("edit"):
+                changes = edit["documentChanges"]
+                self.apply_document_changes(changes)
+
+            if command := actions[index].get("command"):
+                GOPLS_CLIENT.workspace_executeCommand(command)
+
+        self.window.show_quick_panel(
+            action_titles, on_select=select_action, placeholder="select action"
+        )
+
+    def apply_document_changes(self, document_changes: List[dict]):
+
+        active_view = ACTIVE_DOCUMENT.view
+
         for change in document_changes:
-            file_name = lsp.DocumentURI(change["textDocument"]["uri"]).to_path()
-            edits = change["edits"]
-            mapped_document_changes[file_name] = edits
-
-        mapped_document_changes.move_to_end(self.view.file_name())
-
-        for file_name, text_changes in mapped_document_changes.items():
-            LOGGER.debug("try apply changes to %s", file_name)
-
             while True:
-                if DOCUMENT_CHANGE_LOCK.locked():
-                    LOGGER.debug("busy")
+                if TEXT_CHANGE_SYNC.locked():
                     time.sleep(0.5)
                     continue
                 break
 
-            LOGGER.debug("apply changes to: %s", file_name)
-            DOCUMENT_CHANGE_LOCK.acquire()
-            document = Document(file_name, force_open=True)
+            file_name = lsp.DocumentURI(change["textDocument"]["uri"]).to_path()
 
             try:
-                document.apply_document_change(text_changes)
+                document = Document.from_file(file_name)
+                document.apply_text_changes(change["edits"])
+                document.save()
 
-            except Exception as err:
-                LOGGER.error(err)
+            except ViewNotFoundError:
+                # modify file without buffer
+                document = FileChanges(file_name)
+                document.apply_text_changes(change["edits"])
 
-            finally:
-                DOCUMENT_CHANGE_LOCK.release()
+        # focus active view
+        self.focus_view(active_view)
 
-            LOGGER.debug("finish apply to: %s", file_name)
-
-    def show_code_action(self, action_params: List[dict]):
-        def on_done(index=-1):
-            if index > -1:
-                action = action_params[index]
-                LOGGER.debug(action)
-
-                edit = action.get("edit")
-                if edit:
-                    documentChanges = edit["documentChanges"]
-                    self.apply_text_document_changes(documentChanges)
-
-                command = action.get("command")
-                if command:
-                    self.view.run_command(
-                        "gotools_workspace_exec_command", {"params": command},
-                    )
-
-        items = [item["title"] for item in action_params]
-        self.window.show_quick_panel(items, on_done)
-
-    def apply_document_formatting(self, changes: List[dict]):
-        self.view.run_command("gotools_apply_document_change", {"changes": changes})
-
-    def prepare_rename(self, params):
-        start = params["range"]["start"]
-        end = params["range"]["end"]
-        placeholder = self.view.substr(
-            sublime.Region(
-                self.view.text_point(start["line"], start["character"]),
-                self.view.text_point(end["line"], end["character"]),
-            )
-        )
-
-        self.input_rename(start["line"], start["character"], placeholder)
-
-    def input_rename(self, row, col, placeholder: str):
-        def apply_rename(new_name):
-            self.view.run_command(
-                "gotools_rename", {"row": row, "col": col, "new_name": new_name}
-            )
+    def input_rename(self, file_name: str, row: int, col: int, placeholder: str):
+        def rename_callback(new_name):
+            GOPLS_CLIENT.textDocument_rename(file_name, row, col, new_name)
 
         self.window.show_input_panel(
-            caption="rename",
+            caption="rename :",
             initial_text=placeholder,
-            on_done=apply_rename,
+            on_done=rename_callback,
             on_change=None,
             on_cancel=None,
         )
 
-    def goto(self, params: List[dict]):
-        LOGGER.debug("goto: %s", params)
+    def show_definition(self, definitions: List[dict]):
+        def build_location(definition: dict):
+            file_name = lsp.DocumentURI(definition["uri"]).to_path()
+            start = definition["range"]["start"]
+            row = start["line"] + 1
+            col = start["character"] + 1
+            return f"{file_name}:{row}:{col}"
 
-        def get_location(location: Dict[str, object]):
-            try:
-                file_name = lsp.DocumentURI(location["uri"]).to_path()
-                start = location["range"]["start"]
-                row, col = start["line"] + 1, start["character"] + 1
+        locations = [build_location(definition) for definition in definitions]
+        LOGGER.debug(locations)
 
-            except Exception as err:
-                LOGGER.error(f"get location error: {err}")
-            else:
-                return f"{file_name}:{row}:{col}"
-
-        locations = [get_location(item) for item in params]
-
-        def on_select(index=-1):
-            if index > -1:
-                self.window.open_file(locations[index], flags=sublime.ENCODED_POSITION)
+        def select_location(index=-1):
+            if index < 0:
+                return
+            self.window.open_file(locations[index], flags=sublime.ENCODED_POSITION)
 
         self.window.show_quick_panel(
-            items=locations, on_select=on_select, flags=sublime.MONOSPACE_FONT
+            locations, on_select=select_location, placeholder="select location"
         )
 
 
-class Document:
-    """Document handler"""
-
-    def __init__(self, file_name: str, *, force_open: bool = False):
-
-        self.window: sublime.Window = sublime.active_window()
-        self.file_name = file_name
-        self.view: sublime.View = self.window.find_open_file(file_name)
-
-        if force_open:
-            self.view: sublime.View = self.window.open_file(file_name)
-
-        if self.view is None:
-            raise ValueError(f"unable get view for {file_name}")
-
-    def focus_view(self):
-        self.window.focus_view(self.view)
-
-    def apply_document_change(self, changes: List[dict]):
-
-        # wait until view loaded
-        while True:
-            LOGGER.debug("loading %s", self.file_name)
-            if self.view.is_loading():
-                time.sleep(0.5)
-                continue
-            break
-
-        self.view.run_command("gotools_apply_document_change", {"changes": changes})
-
-    def apply_diagnostics(self, diagnostics_item: List[dict]):
-
-        if DOCUMENT_CHANGE_LOCK.locked():
-            LOGGER.debug("in document change process")
-            return
-
-        LOGGER.debug("apply diagnostics to: %s", self.file_name)
-        diagnostics = Diagnostics(self.file_name)
-        diagnostics.set_diagnostics(diagnostics_item)
-        diagnostics.show_panel()
-
-    def clear_diagnostics(self):
-        diagnostic = Diagnostics(self.file_name)
-        try:
-            diagnostic.erase_highlight()
-            diagnostic.destroy_panel()
-
-        except Exception as err:
-            LOGGER.error(err)
-
-    def show_diagnostics(self):
-        diagnostic = Diagnostics(self.file_name)
-        diagnostic.show_panel()
-
-
-ACTIVE_DOCUMENT: ActiveDocument = ActiveDocument()
+ACTIVE_DOCUMENT = Document(sublime.View(0))
+WORKSPACE = Workspace()
 
 
 class GoplsHandler(lsp.BaseHandler):
-    """LSP client handler"""
+    """gopls command handler"""
 
-    def _hide_completion(self, character: str):
-        LOGGER.info("_hide_completion")
-
-        if character in ";:!]})":
-            ACTIVE_DOCUMENT.hide_completion()
+    def __init__(self):
+        self.progress_token = set()
 
     def handle_initialize(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_initialize: {message}")
+        if error := message.get("error"):
+            LOGGER.error(error["message"])
 
-        if message.error:
-            LOGGER.error(f"error: {message.error}")
-            return
+        if result := message.get("result"):
+            # handle initialize here
+            LOGGER.debug(result)
 
-        if not message.result:
-            return
+            # notify client has initialized
+            GOPLS_CLIENT.initialized()
 
-        # notify if initialized
-        GOPLS_CLIENT.initialized()
-
-        file_name = ACTIVE_DOCUMENT.view.file_name()
-        source = ACTIVE_DOCUMENT.view.substr(
-            sublime.Region(0, ACTIVE_DOCUMENT.view.size())
-        )
-        GOPLS_CLIENT.textDocument_didOpen(file_name, source)
-
-    def handle_textDocument_completion(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_completion: {message}")
-
-        if message.error:
-            LOGGER.error(f"error: {message.error}")
-            return
-
-        if not message.result:
-            return
-
-        ACTIVE_DOCUMENT.show_completions(message.result)
-
-    def handle_textDocument_hover(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_hover: {message}")
-
-        if message.error:
-            LOGGER.error(f"error: {message.error}")
-            return
-
-        if not message.result:
-            return
-
-        ACTIVE_DOCUMENT.show_popup(message.result)
-
-    def handle_textDocument_formatting(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_formatting: {message}")
-
-        if message.error:
-            LOGGER.error(f"error: {message.error}")
-            return
-
-        if not message.result:
-            return
-
-        changes = message.result
-        try:
-            ACTIVE_DOCUMENT.apply_document_formatting(changes)
-        except Exception as err:
-            LOGGER.error(err)
-
-    def handle_textDocument_semanticTokens_full(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_semanticTokens_full: {message}")
-
-    def handle_textDocument_documentLink(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_documentLink: {message}")
-
-    def handle_textDocument_documentSymbol(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_documentSymbol: {message}")
-
-    def handle_textDocument_codeAction(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_codeAction: {message}")
-
-        if message.error:
-            LOGGER.error(f"error: {message.error}")
-            return
-
-        if not message.result:
-            return
-
-        ACTIVE_DOCUMENT.show_code_action(message.result)
-
-    def handle_textDocument_publishDiagnostics(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_publishDiagnostics: {message}")
-
-        params = message.params
-        file_name = lsp.DocumentURI(params["uri"]).to_path()
-
-        diagnostics = params["diagnostics"]
-        document = Document(file_name)
-
-        if not diagnostics:
-            document.clear_diagnostics()
-            return
-
-        document.apply_diagnostics(diagnostics)
-
-    def handle_workspace_configuration(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_workspace_configuration: {message}")
-        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message["id"], result=[{}]))
+            # open active document
+            WORKSPACE.open_file(ACTIVE_DOCUMENT.file_name(), ACTIVE_DOCUMENT.source())
 
     def handle_window_workDoneProgress_create(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_window_workDoneProgress_create: {message}")
-        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message["id"], result=""))
-
-    def handle_window_showMessage(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_window_showMessage: {message}")
-
-    def handle_window_logMessage(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_window_logMessage: {message}")
-
-        # print log to console
-        print(message.params["message"])
+        message_id = message.get("id")
+        self.progress_token.add(message["params"]["token"])
+        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message_id, result=""))
 
     def handle_S_progress(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_S_progress: {message}")
+        params = message["params"]
+        token = params["token"]
 
-        params = message.params
-        try:
-            kind = params["value"]["kind"]
-            message = params["value"]["message"]
+        if token not in self.progress_token:
+            raise ValueError("invalid token")
 
-            if kind == "begin":
-                title = params["value"]["title"]
-                WINDOW_PROGRESS.start(title, message)
-            else:
-                WINDOW_PROGRESS.finish()
-                sublime.status_message(message)
+        kind = params["value"]["kind"]
+        title = params["value"].get("title")  # end message has not title
+        message = params["value"]["message"]
 
-        except Exception as err:
-            LOGGER.error(f"error apply progress: {err}", exc_info=True)
+        if kind == "begin":
+            STATUS_MESSAGE.set_status(f"{title}: {message}")
 
-    def handle_workspace_applyEdit(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_workspace_applyEdit: {message}")
+        elif kind == "end":
+            self.progress_token.remove(token)
+            STATUS_MESSAGE.reset_status()
+            STATUS_MESSAGE.show_message(message)
 
-        params = message.params
-        try:
-            document_changes = params["edit"]["documentChanges"]
-        except Exception as err:
-            LOGGER.error(repr(err))
-        else:
-            try:
-                ACTIVE_DOCUMENT.apply_text_document_changes(document_changes)
-            except Exception as err:
-                LOGGER.error("error apply document_changes: %s", repr(err))
-            else:
-                GOPLS_CLIENT.send_response(
-                    lsp.RPCMessage.response(message["id"], result={"applied": True})
-                )
+    def handle_workspace_configuration(self, message: lsp.RPCMessage):
+        message_id = message.get("id")
+        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message_id, result=[{}]))
 
-    def handle_workspace_executeCommand(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_workspace_executeCommand: {message}")
-        if message.error:
-            LOGGER.error(f"error: {message.error}")
-            return
-
-        # if no error result should be None
-        if message.result is not None:
-            LOGGER.info(f"workspace/executeCommand result={message.result}")
-            return
+    def handle_window_logMessage(self, message: lsp.RPCMessage):
+        params = message["params"]
+        if message := params.get("message"):
+            print(message)
 
     def handle_client_registerCapability(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_client_registerCapability: {message}")
-        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message["id"], result=""))
+        message_id = message.get("id")
+        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message_id, result=""))
 
-    def handle_client_unregisterCapability(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_client_unregisterCapability: {message}")
-        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message["id"], result=""))
+    def handle_textDocument_documentSymbol(self, message: lsp.RPCMessage):
+        if error := message.get("error"):
+            LOGGER.debug(error["message"])
+        if result := message.get("result"):
+            LOGGER.debug(result)
 
-    def handle_textDocument_prepareRename(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_prepareRename: {message}")
+    def handle_textDocument_publishDiagnostics(self, message: lsp.RPCMessage):
+        params = message["params"]
 
-        if message.error:
-            LOGGER.error(f"error: {message.error}")
-            return
-
-        if not message.result:
-            return
-
-        ACTIVE_DOCUMENT.prepare_rename(message.result)
-
-    def handle_textDocument_rename(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_rename: {message}")
-
-        if message.error:
-            LOGGER.error(f"error: {message.error}")
-            return
-
-        if not message.result:
-            return
+        diagnostics = params["diagnostics"]
+        file_name = lsp.DocumentURI(params["uri"]).to_path()
 
         try:
-            document_changes = message.result["documentChanges"]
-        except Exception as err:
-            LOGGER.error(repr(err))
+            document = Document.from_file(file_name)
+        except ViewNotFoundError:
+            # ignore unbuffered document
+            pass
         else:
             try:
-                ACTIVE_DOCUMENT.apply_text_document_changes(document_changes)
+                document.apply_diagnostics(diagnostics)
             except Exception as err:
-                LOGGER.error("error apply document_changes: %s", repr(err))
+                LOGGER.error(err, exc_info=True)
+
+    def handle_textDocument_codeAction(self, message: lsp.RPCMessage):
+        if error := message.get("error"):
+            LOGGER.debug(error["message"])
+
+        if result := message.get("result"):
+            try:
+                WORKSPACE.show_code_actions(result)
+            except Exception as err:
+                LOGGER.error(err, exc_info=True)
+
+    def handle_textDocument_completion(self, message: lsp.RPCMessage):
+        if error := message.get("error"):
+            LOGGER.debug(error["message"])
+
+        if result := message.get("result"):
+            if items := result.get("items"):
+                try:
+                    ACTIVE_DOCUMENT.show_completions(items)
+                except Exception as err:
+                    LOGGER.error(err, exc_info=True)
+
+    def handle_textDocument_hover(self, message: lsp.RPCMessage):
+        if error := message.get("error"):
+            LOGGER.debug(error["message"])
+
+        if result := message.get("result"):
+            try:
+                ACTIVE_DOCUMENT.show_documentation(result)
+            except Exception as err:
+                LOGGER.error(err, exc_info=True)
+
+    def handle_textDocument_formatting(self, message: lsp.RPCMessage):
+        if error := message.get("error"):
+            LOGGER.debug(error["message"])
+
+        if result := message.get("result"):
+            changes = result
+            try:
+                ACTIVE_DOCUMENT.apply_text_changes(changes)
+            except Exception as err:
+                LOGGER.error(err, exc_info=True)
+
+    def handle_workspace_executeCommand(self, message: lsp.RPCMessage):
+        if error := message.get("error"):
+            LOGGER.debug(error["message"])
+
+        if result := message.get("result"):
+            LOGGER.debug(result)
+
+    def handle_workspace_applyEdit(self, message: lsp.RPCMessage):
+        message_id = message["id"]
+        params = message["params"]
+
+        document_changes = params["edit"]["documentChanges"]
+        try:
+            WORKSPACE.apply_document_changes(document_changes)
+        except Exception as err:
+            LOGGER.error(err, exc_info=True)
+        else:
+            GOPLS_CLIENT.send_response(
+                lsp.RPCMessage.response(message_id, result={"applied": True})
+            )
+
+    def handle_textDocument_prepareRename(self, message: lsp.RPCMessage):
+        if error := message.get("error"):
+            LOGGER.debug(error["message"])
+
+        if result := message.get("result"):
+            srow = result["range"]["start"]["line"]
+            scol = result["range"]["start"]["character"]
+            placeholder = result["placeholder"]
+
+            file_name = ACTIVE_DOCUMENT.file_name()
+
+            WORKSPACE.input_rename(file_name, srow, scol, placeholder)
+
+    def handle_textDocument_rename(self, message: lsp.RPCMessage):
+        if error := message.get("error"):
+            LOGGER.debug(error["message"])
+
+        if result := message.get("result"):
+            document_changes = result["documentChanges"]
+            try:
+                WORKSPACE.apply_document_changes(document_changes)
+            except Exception as err:
+                LOGGER.error(err, exc_info=True)
 
     def handle_textDocument_definition(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_definition: {message}")
+        if error := message.get("error"):
+            LOGGER.debug(error["message"])
 
-        if message.error:
-            LOGGER.error(f"error: {message.error}")
-            return
-
-        if not message.result:
-            return
-
-        ACTIVE_DOCUMENT.goto(message.result)
-
-    def handle_textDocument_declaration(self, message: lsp.RPCMessage):
-        LOGGER.info(f"handle_textDocument_declaration: {message}")
-
-        if message.error:
-            LOGGER.error(f"error: {message.error}")
-            return
-
-        if not message.result:
-            return
-
-        ACTIVE_DOCUMENT.goto(message.result)
+        if result := message.get("result"):
+            LOGGER.debug(f"handle definition: {result}")
+            try:
+                WORKSPACE.show_definition(result)
+            except Exception as err:
+                LOGGER.error(err, exc_info=True)
 
 
-GOPLS_CLIENT = lsp.LSPClient(lsp.StandardIO("gopls", ["-vv"]), GoplsHandler())
+# setup gopls client
+transport = lsp.StandardIO("gopls", ["-vv"])
+handler = GoplsHandler()
+GOPLS_CLIENT = lsp.LSPClient(transport, handler)
 
 
 class ServerManager:
-    def __init__(self):
-        self.server_online = False
+    """ServerManager manage server lifetime"""
 
-    def run_server(self, func):
+    def __init__(self):
+        self.is_running = False
+
+        self.cancel_timeout = 0
+        self.factor = 0
+
+    def running(self, func):
+        """continue execution if server is running"""
+
+        @wraps(func)
         def wrapper(*args, **kwargs):
-            if self.server_online:
+            if self.is_running:
                 return func(*args, **kwargs)
 
-            self.run()
+            LOGGER.info("server offline")
             return None
 
         return wrapper
 
-    def run(self):
-        GOPLS_CLIENT.run_server()
+    def run_server(self, func):
+        """run server if not running"""
 
-        if GOPLS_CLIENT.server_running():
-            self.server_online = True
-            GOPLS_CLIENT.initialize(get_project_path(ACTIVE_DOCUMENT.view.file_name()))
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if self.is_running:
+                return func(*args, **kwargs)
 
-    def shutdown(self):
-        if GOPLS_CLIENT.server_running():
+            # run server
+            self._run()
+            return None
+
+        return wrapper
+
+    def _run(self):
+        LOGGER.info("run server")
+
+        # delay next trial if error run server
+        now = time.time()
+        if 0 < now < self.cancel_timeout:
+            LOGGER.debug(f"cancel run server until {repr(time.ctime(now))}")
+            return
+
+        try:
+            # set timeout
+            self.cancel_timeout = now + (10 * self.factor)
+
+            STATUS_MESSAGE.set_status("starting server")
+            GOPLS_CLIENT.run_server()
+
+        except Exception as err:
+            # increment timeout factor
+            self.factor += 1
+
+            if isinstance(err, FileNotFoundError):
+                print(f"> {err}. Make sure if 'gopls' is installed!'")
+            else:
+                LOGGER.error(err, exc_info=True)
+
+            STATUS_MESSAGE.reset_status()
+            STATUS_MESSAGE.show_message(f"error starting server: {err}")
+
+        else:
+            # reset
+            self.cancel_timeout = 0
+            self.factor = 0
+
+            self.is_running = True
+            self._initialize()
+
+    def _initialize(self):
+        LOGGER.info("initialize server")
+
+        try:
+            project_path = ACTIVE_DOCUMENT.get_project_path()
+        except ValueError as err:
+            sublime.error_message(err)
+        else:
+            WORKSPACE.set_project_root(project_path)
+            GOPLS_CLIENT.initialize(project_path, "Sublime Text", sublime.version())
+
+    def shutdown_server(self):
+        if self.is_running:
             GOPLS_CLIENT.shutdown_server()
-            self.server_online = False
+            self.is_running = False
 
 
 SERVER_MANAGER = ServerManager()
 
 
-def plugin_loaded():
-    settigs_basename = "Go.sublime-settings"
-    settings: sublime.Settings = sublime.load_settings(settigs_basename)
-    settings.set("index_files", False)
-    settings.set("show_definitions", False)
-    sublime.save_settings(settigs_basename)
-
-
-def plugin_unloaded():
-    # SERVER_MANAGER.shutdown()
-    pass
-
-
-def get_project_path(file_name: str):
-    if not file_name:
-        raise ValueError("invalid file_name: %s" % file_name)
-
-    folders = [
-        folder
-        for folder in sublime.active_window().folders()
-        if file_name.startswith(folder)
-    ]
-    if not folders:
-        return os.path.dirname(file_name)
-    return max(folders)
-
-
-REQUEST_LOCK = threading.Lock()
-
-
-def pipe(func):
-    def wrapper(*args, **kwargs):
-        if REQUEST_LOCK.locked():
-            return None
-
-        with REQUEST_LOCK:
-            return func(*args, **kwargs)
-
-    return wrapper
-
-
-def valid_source(view: sublime.View) -> bool:
+def valid_source(view: sublime.View):
+    """if view is valid"""
     return view.match_selector(0, "source.go")
 
 
-def valid_identifier(view: sublime.View, location: int):
-    if view.match_selector(location, "string") or view.match_selector(
-        location, "comment"
-    ):
+def valid_context(view: sublime.View, point: int):
+    """if point in valid context"""
+
+    # string
+    if view.match_selector(point, "string"):
+        return False
+    # comment
+    if view.match_selector(point, "comment"):
         return False
     return True
 
 
 class EventListener(sublime_plugin.EventListener):
-    """sublime event listener"""
+    """event listener"""
 
     def on_query_completions(
         self, view: sublime.View, prefix: str, locations: List[int]
-    ) -> Union[CompletionList, None]:
-
+    ):
         if not valid_source(view):
             return None
 
-        if not valid_identifier(view, locations[0]):
-            return CompletionList(
-                completions=[], flags=sublime.INHIBIT_EXPLICIT_COMPLETIONS
+        # trigger completion at first location
+        point = locations[0]
+
+        if not valid_context(view, point):
+            return None
+
+        if completions := ACTIVE_DOCUMENT.get_cached_completion():
+            return sublime.CompletionList(
+                completions,
+                flags=sublime.INHIBIT_WORD_COMPLETIONS
+                | sublime.INHIBIT_EXPLICIT_COMPLETIONS,
             )
 
-        completions = ACTIVE_DOCUMENT.get_completion_result()
-        if completions:
-            return completions
+        ACTIVE_DOCUMENT.set_view(view)
+        ACTIVE_DOCUMENT.hide_completion()
 
         thread = threading.Thread(
-            target=self.on_query_completions_task, args=(view, locations)
+            target=self.trigger_completion_task, args=(view, point)
         )
         thread.start()
 
-        ACTIVE_DOCUMENT.hide_completion()
-        return None
-
-    @pipe
     @SERVER_MANAGER.run_server
-    def on_query_completions_task(self, view, locations):
+    @SERVER_MANAGER.running
+    def trigger_completion_task(self, view: sublime.View, point: int):
         file_name = view.file_name()
-        row, col = view.rowcol(locations[0])
+        row, col = view.rowcol_utf16(point)
 
         try:
-            ACTIVE_DOCUMENT.view = view
             GOPLS_CLIENT.textDocument_completion(file_name, row, col)
-
         except lsp.NotInitialized:
-            GOPLS_CLIENT.initialize(get_project_path(file_name))
+            LOGGER.debug("NotInitialized")
+            pass
 
-    def on_hover(self, view: sublime.View, point: int, hover_zone: int) -> None:
+    def on_hover(self, view: sublime.View, point: int, hover_zone: int):
         if not valid_source(view):
             return
 
-        if not hover_zone == sublime.HOVER_TEXT:
-            # LOGGER.debug("currently only support HOVER_TEXT")
+        if not valid_context(view, point):
             return
 
-        if not valid_identifier(view, point):
+        ACTIVE_DOCUMENT.set_view(view)
+
+        # currently only apply hover text
+        if hover_zone != sublime.HOVER_TEXT:
             return
 
-        text: str = view.substr(view.word(point))
-        if not text.isidentifier():
-            return
-
-        if point == view.size():
-            return
-
-        thread = threading.Thread(target=self.on_hover_text_task, args=(view, point))
+        thread = threading.Thread(target=self.hover_text_task, args=(view, point))
         thread.start()
 
-    @pipe
     @SERVER_MANAGER.run_server
-    def on_hover_text_task(self, view, point):
+    @SERVER_MANAGER.running
+    def hover_text_task(self, view: sublime.View, point: int):
         file_name = view.file_name()
-        row, col = view.rowcol(point)
+        row, col = view.rowcol_utf16(point)
 
         try:
-            ACTIVE_DOCUMENT.view = view
             GOPLS_CLIENT.textDocument_hover(file_name, row, col)
-
         except lsp.NotInitialized:
-            GOPLS_CLIENT.initialize(get_project_path(file_name))
+            LOGGER.debug("NotInitialized")
+            pass
 
-    def on_load_async(self, view: sublime.View) -> None:
-        file_name = view.file_name()
-        if not (valid_source(view) and SERVER_MANAGER.server_online):
+    def _notify_document_open(self, view: sublime.View):
+        if not (valid_source(view) and SERVER_MANAGER.is_running):
             return
 
+        WORKSPACE.notify_file_changes()
         source = view.substr(sublime.Region(0, view.size()))
+
         try:
-            GOPLS_CLIENT.textDocument_didOpen(file_name, source)
-            # set current active view
-            ACTIVE_DOCUMENT.view = view
+            WORKSPACE.open_file(view.file_name(), source)
         except lsp.NotInitialized:
             pass
 
-    def on_reload_async(self, view: sublime.View) -> None:
-        self.on_load_async(view)
+    def on_activated(self, view: sublime.View):
+        self._notify_document_open(view)
 
-    def on_activated_async(self, view: sublime.View) -> None:
-        file_name = view.file_name()
-        if not (valid_source(view) and SERVER_MANAGER.server_online):
+        if not valid_source(view):
             return
 
-        # show diagnostic
-        document = Document(file_name)
-        document.show_diagnostics()
+        DIAGNOSTIC_MANAGER.show_output_panel(view.file_name())
 
-        source = view.substr(sublime.Region(0, view.size()))
-        try:
-            GOPLS_CLIENT.textDocument_didOpen(file_name, source)
-            # set current active view
-            ACTIVE_DOCUMENT.view = view
-        except lsp.NotInitialized:
-            pass
+    def on_load(self, view: sublime.View):
+        self._notify_document_open(view)
 
-    def on_close(self, view: sublime.View) -> None:
-        file_name = view.file_name()
-        if not (valid_source(view) and SERVER_MANAGER.server_online):
+    def on_reload(self, view: sublime.View):
+        self._notify_document_open(view)
+
+    def on_pre_save(self, view: sublime.View):
+        if not (valid_source(view) and SERVER_MANAGER.is_running):
             return
 
-        try:
-            GOPLS_CLIENT.textDocument_didClose(file_name)
-            # reset active view
-            ACTIVE_DOCUMENT.view = None
-        except lsp.NotInitialized:
-            pass
-        finally:
-            Diagnostics(file_name).destroy_panel()
-
-    def on_pre_save_async(self, view: sublime.View) -> None:
-        file_name = view.file_name()
-        if not (valid_source(view) and SERVER_MANAGER.server_online):
-            return
-
-        # view not modified
         if not view.is_dirty():
             return
 
         try:
-            GOPLS_CLIENT.textDocument_didSave(file_name)
+            GOPLS_CLIENT.textDocument_didSave(view.file_name())
         except lsp.NotInitialized:
             pass
+
+    def on_post_save(self, view: sublime.View):
+        if not (valid_source(view) and SERVER_MANAGER.is_running):
+            return
+
+        WORKSPACE.notify_file_changes()
+
+    def on_pre_close(self, view: sublime.View):
+        if not (valid_source(view) and SERVER_MANAGER.is_running):
+            return
+        try:
+            WORKSPACE.close_file(view.file_name())
+        except lsp.NotInitialized:
+            pass
+
+        DIAGNOSTIC_MANAGER.destroy_output_panel(view.file_name())
+
+
+def plugin_unloaded():
+    SERVER_MANAGER.shutdown_server()
 
 
 class TextChangeListener(sublime_plugin.TextChangeListener):
+    """listen text change"""
+
     def on_text_changed(self, changes: List[sublime.TextChange]):
 
-        view = self.buffer.primary_view()
+        buffer: sublime.Buffer = self.buffer
+        file_name = buffer.file_name()
+        view = buffer.primary_view()
 
-        if not view.file_name():
+        if not (valid_source(view) and SERVER_MANAGER.is_running):
             return
 
-        if not (SERVER_MANAGER.server_online and valid_source(view)):
-            return
-
-        LOGGER.info("on_text_changed_async")
-        content_changes = [self.build_change(change) for change in changes]
+        change_items = list(self.build_items(view, changes))
 
         try:
-            file_name = self.buffer.file_name()
-            LOGGER.debug(f"notify change for {file_name}\n{content_changes}")
-            GOPLS_CLIENT.textDocument_didChange(file_name, content_changes)
-
+            GOPLS_CLIENT.textDocument_didChange(file_name, change_items)
         except lsp.NotInitialized:
             pass
 
-    @staticmethod
-    def build_change(change: sublime.TextChange):
-        start: sublime.HistoricPosition = change.a
-        end: sublime.HistoricPosition = change.b
+    def build_items(self, view: sublime.View, changes: List[sublime.TextChange]):
+        for change in changes:
+            start: sublime.HistoricPosition = change.a
+            end: sublime.HistoricPosition = change.b
 
-        return {
-            "range": {
-                "end": {"character": end.col, "line": end.row},
-                "start": {"character": start.col, "line": start.row},
-            },
-            "rangeLength": change.len_utf8,
-            "text": change.str,
-        }
+            yield {
+                "range": {
+                    "end": {"character": end.col, "line": end.row},
+                    "start": {"character": start.col, "line": start.row},
+                },
+                "rangeLength": change.len_utf16,
+                "text": change.str,
+            }
 
 
 class GotoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
-    def run(self, edit):
-        LOGGER.info("GotoolsDocumentFormattingCommand")
+    """document formatting command"""
 
-        if valid_source(self.view) and SERVER_MANAGER.server_online:
-            try:
-                GOPLS_CLIENT.textDocument_formatting(self.view.file_name())
-            except lsp.NotInitialized:
-                pass
+    def run(self, edit: sublime.Edit):
+        if not (valid_source(self.view) and SERVER_MANAGER.is_running):
+            return
+
+        ACTIVE_DOCUMENT.set_view(self.view)
+
+        try:
+            GOPLS_CLIENT.textDocument_formatting(self.view.file_name())
+        except lsp.NotInitialized:
+            pass
 
     def is_visible(self):
-        return valid_source(self.view) and SERVER_MANAGER.server_online
+        return valid_source(self.view) and SERVER_MANAGER.is_running
 
 
 class GotoolsCodeActionCommand(sublime_plugin.TextCommand):
-    def run(self, edit):
-        LOGGER.info("GotoolsCodeActionCommand")
+    """code action command"""
 
-        if valid_source(self.view) and SERVER_MANAGER.server_online:
-            location = self.view.sel()[0]
-            start_row, start_col = self.view.rowcol(location.a)
-            end_row, end_col = self.view.rowcol(location.b)
+    def run(self, edit: sublime.Edit):
+        if not (valid_source(self.view) and SERVER_MANAGER.is_running):
+            return
 
-            try:
-                GOPLS_CLIENT.textDocument_codeAction(
-                    self.view.file_name(), start_row, start_col, end_row, end_col
-                )
-            except lsp.NotInitialized:
-                pass
+        ACTIVE_DOCUMENT.set_view(self.view)
 
-    def is_visible(self):
-        return valid_source(self.view) and SERVER_MANAGER.server_online
+        selection = self.view.sel()[0]
+        srow, scol = self.view.rowcol_utf16(selection.a)
+        erow, ecol = self.view.rowcol_utf16(selection.b)
 
+        diagnostics = DIAGNOSTIC_MANAGER.get_diagnostics(self.view.file_name())
 
-class GotoolsWorkspaceExecCommandCommand(sublime_plugin.TextCommand):
-    def run(self, edit, params):
-        LOGGER.info("GotoolsWorkspaceExecCommandCommand")
-
-        if valid_source(self.view) and SERVER_MANAGER.server_online:
-            try:
-                GOPLS_CLIENT.workspace_executeCommand(params)
-            except lsp.NotInitialized:
-                pass
+        try:
+            GOPLS_CLIENT.textDocument_codeAction(
+                self.view.file_name(), srow, scol, erow, ecol, diagnostics
+            )
+        except lsp.NotInitialized:
+            pass
 
     def is_visible(self):
-        return valid_source(self.view) and SERVER_MANAGER.server_online
+        return valid_source(self.view) and SERVER_MANAGER.is_running
 
 
 class GotoolsRenameCommand(sublime_plugin.TextCommand):
-    def run(self, edit, row, col, new_name):
-        LOGGER.info("GotoolsRenameCommand")
+    """code action command"""
 
-        if valid_source(self.view) and SERVER_MANAGER.server_online:
-            file_name = self.view.file_name()
-            try:
-                GOPLS_CLIENT.textDocument_rename(file_name, row, col, new_name)
-            except lsp.NotInitialized:
-                pass
+    def run(self, edit: sublime.Edit):
+        if not (valid_source(self.view) and SERVER_MANAGER.is_running):
+            return
 
-    def is_visible(self):
-        return valid_source(self.view) and SERVER_MANAGER.server_online
+        ACTIVE_DOCUMENT.set_view(self.view)
 
+        selection = self.view.sel()[0]
+        srow, scol = self.view.rowcol_utf16(selection.a)
 
-class GotoolsPrepareRenameCommand(sublime_plugin.TextCommand):
-    def run(self, edit, location=None):
-        LOGGER.info("GotoolsPrepareRenameCommand")
-
-        if valid_source(self.view) and SERVER_MANAGER.server_online:
-            file_name = self.view.file_name()
-
-            if location is None:
-                location = self.view.sel()[0].a
-
-            row, col = self.view.rowcol(location)
-            try:
-                GOPLS_CLIENT.textDocument_prepareRename(file_name, row, col)
-            except lsp.NotInitialized:
-                pass
+        try:
+            GOPLS_CLIENT.textDocument_prepareRename(
+                self.view.file_name(), srow, scol,
+            )
+        except lsp.NotInitialized:
+            pass
 
     def is_visible(self):
-        return valid_source(self.view) and SERVER_MANAGER.server_online
+        return valid_source(self.view) and SERVER_MANAGER.is_running
 
 
 class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
-    def run(self, edit, location=None):
-        LOGGER.info("GotoolsGotoDefinitionCommand")
+    """code action command"""
 
-        if valid_source(self.view) and SERVER_MANAGER.server_online:
-            file_name = self.view.file_name()
+    def run(self, edit: sublime.Edit):
+        if not (valid_source(self.view) and SERVER_MANAGER.is_running):
+            return
 
-            if location is None:
-                location = self.view.sel()[0].a
+        ACTIVE_DOCUMENT.set_view(self.view)
 
-            row, col = self.view.rowcol(location)
-            try:
-                GOPLS_CLIENT.textDocument_definition(file_name, row, col)
-            except lsp.NotInitialized:
-                pass
+        selection = self.view.sel()[0]
+        srow, scol = self.view.rowcol_utf16(selection.a)
 
-    def is_visible(self):
-        return valid_source(self.view) and SERVER_MANAGER.server_online
-
-
-class GotoolsGotoDeclarationCommand(sublime_plugin.TextCommand):
-    def run(self, edit, location=None):
-        LOGGER.info("GotoolsGotoDeclarationCommand")
-
-        if valid_source(self.view) and SERVER_MANAGER.server_online:
-            file_name = self.view.file_name()
-
-            if location is None:
-                location = self.view.sel()[0].a
-
-            row, col = self.view.rowcol(location)
-            try:
-                GOPLS_CLIENT.textDocument_declaration(file_name, row, col)
-            except lsp.NotInitialized:
-                pass
+        try:
+            GOPLS_CLIENT.textDocument_definition(
+                self.view.file_name(), srow, scol,
+            )
+        except lsp.NotInitialized:
+            pass
 
     def is_visible(self):
-        return valid_source(self.view) and SERVER_MANAGER.server_online
+        return valid_source(self.view) and SERVER_MANAGER.is_running
 
 
 class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
+    """restart server"""
+
     def run(self, edit, location=None):
         LOGGER.info("GotoolsRestartServerCommand")
-        SERVER_MANAGER.shutdown()
+        SERVER_MANAGER.shutdown_server()
 
     def is_visible(self):
-        return SERVER_MANAGER.server_online
+        return SERVER_MANAGER.is_running
 
 
 class GotoolsInstallToolsCommand(sublime_plugin.TextCommand):

@@ -9,7 +9,7 @@ import subprocess
 import threading
 from abc import ABC, abstractmethod
 from functools import wraps
-from typing import List, Union
+from typing import List, Union, Optional, Dict, Any
 from urllib.parse import urlparse, urlunparse, quote, unquote
 from urllib.request import pathname2url, url2pathname
 
@@ -268,9 +268,6 @@ class Commands:
         self.document_version_map = {}
         self.transport = transport
 
-        self.active_document = ""
-        self.source = ""
-
     def get_request_id(self):
         self.request_id += 1
         return self.request_id
@@ -292,14 +289,19 @@ class Commands:
     def cancelRequest(self, request_id):
         self.cancel_request(request_id)
 
-    def initialize(self, project_path: str):
+    def initialize(
+        self,
+        project_path: str,
+        client_name: str = "TextEditor",
+        client_version: str = "1.0",
+    ):
         """initialize server"""
 
         LOGGER.info("initialize")
 
         params = {
-            "processId": os.getpid(),
-            "clientInfo": {"name": "Sublime Text", "version": "4126"},
+            "processId": 2372,
+            "clientInfo": {"name": client_name, "version": client_version},
             "locale": "en-us",
             "rootPath": project_path,
             "rootUri": DocumentURI.from_path(project_path),
@@ -313,8 +315,11 @@ class Commands:
                         "normalizesLineEndings": True,
                         "changeAnnotationSupport": {"groupsOnLabel": True},
                     },
-                    "didChangeConfiguration": {"dynamicRegistration": True},
-                    "didChangeWatchedFiles": {"dynamicRegistration": True},
+                    "configuration": True,
+                    "didChangeWatchedFiles": {
+                        "dynamicRegistration": True,
+                        "relativePatternSupport": True,
+                    },
                     "symbol": {
                         "dynamicRegistration": True,
                         "symbolKind": {
@@ -348,10 +353,11 @@ class Commands:
                             ]
                         },
                         "tagSupport": {"valueSet": [1]},
+                        "resolveSupport": {"properties": ["location.range"]},
                     },
                     "codeLens": {"refreshSupport": True},
                     "executeCommand": {"dynamicRegistration": True},
-                    "configuration": True,
+                    "didChangeConfiguration": {"dynamicRegistration": True},
                     "workspaceFolders": True,
                     "semanticTokens": {"refreshSupport": True},
                     "fileOperations": {
@@ -363,6 +369,9 @@ class Commands:
                         "willRename": True,
                         "willDelete": True,
                     },
+                    "inlineValue": {"refreshSupport": True},
+                    "inlayHint": {"refreshSupport": True},
+                    "diagnostics": {"refreshSupport": True},
                 },
                 "textDocument": {
                     "publishDiagnostics": {
@@ -382,7 +391,8 @@ class Commands:
                         "dynamicRegistration": True,
                         "contextSupport": True,
                         "completionItem": {
-                            "snippetSupport": False,
+                            # "snippetSupport": True,
+                            "snippetSupport": False,  # accept text only
                             "commitCharactersSupport": True,
                             "documentationFormat": ["markdown", "plaintext"],
                             "deprecatedSupport": True,
@@ -396,8 +406,13 @@ class Commands:
                                     "additionalTextEdits",
                                 ]
                             },
-                            "insertTextModeSupport": {"valueSet": [1]},
+                            # "insertTextModeSupport": {"valueSet": [1, 2]},
+                            "insertTextModeSupport": {
+                                "valueSet": [1]
+                            },  # accept text only
+                            "labelDetailsSupport": True,
                         },
+                        "insertTextMode": 2,
                         "completionItemKind": {
                             "valueSet": [
                                 1,
@@ -425,6 +440,14 @@ class Commands:
                                 23,
                                 24,
                                 25,
+                            ]
+                        },
+                        "completionList": {
+                            "itemDefaults": [
+                                "commitCharacters",
+                                "editRange",
+                                "insertTextFormat",
+                                "insertTextMode",
                             ]
                         },
                     },
@@ -529,6 +552,10 @@ class Commands:
                         "dynamicRegistration": True,
                         "rangeLimit": 5000,
                         "lineFoldingOnly": True,
+                        "foldingRangeKind": {
+                            "valueSet": ["comment", "imports", "region"]
+                        },
+                        "foldingRange": {"collapsedText": False},
                     },
                     "declaration": {"dynamicRegistration": True, "linkSupport": True},
                     "selectionRange": {"dynamicRegistration": True},
@@ -558,6 +585,7 @@ class Commands:
                             "number",
                             "regexp",
                             "operator",
+                            "decorator",
                         ],
                         "tokenModifiers": [
                             "declaration",
@@ -575,8 +603,28 @@ class Commands:
                         "requests": {"range": True, "full": {"delta": True}},
                         "multilineTokenSupport": False,
                         "overlappingTokenSupport": False,
+                        "serverCancelSupport": True,
+                        "augmentsSyntaxTokens": True,
                     },
                     "linkedEditingRange": {"dynamicRegistration": True},
+                    "typeHierarchy": {"dynamicRegistration": True},
+                    "inlineValue": {"dynamicRegistration": True},
+                    "inlayHint": {
+                        "dynamicRegistration": True,
+                        "resolveSupport": {
+                            "properties": [
+                                "tooltip",
+                                "textEdits",
+                                "label.tooltip",
+                                "label.location",
+                                "label.command",
+                            ]
+                        },
+                    },
+                    "diagnostic": {
+                        "dynamicRegistration": True,
+                        "relatedDocumentSupport": False,
+                    },
                 },
                 "window": {
                     "showMessage": {
@@ -586,8 +634,23 @@ class Commands:
                     "workDoneProgress": True,
                 },
                 "general": {
+                    "staleRequestSupport": {
+                        "cancel": True,
+                        "retryOnContentModified": [
+                            "textDocument/semanticTokens/full",
+                            "textDocument/semanticTokens/range",
+                            "textDocument/semanticTokens/full/delta",
+                        ],
+                    },
                     "regularExpressions": {"engine": "ECMAScript", "version": "ES2020"},
                     "markdown": {"parser": "marked", "version": "1.1.0"},
+                    "positionEncodings": ["utf-16"],
+                },
+                "notebookDocument": {
+                    "synchronization": {
+                        "dynamicRegistration": True,
+                        "executionSummarySupport": True,
+                    }
                 },
             },
             "initializationOptions": {},
@@ -616,17 +679,6 @@ class Commands:
     def textDocument_didOpen(self, file_name: str, source: str):
         LOGGER.info("textDocument_didOpen")
 
-        if self.active_document == file_name and self.source == source:
-            LOGGER.debug("document already opened")
-            return
-
-        change_watched_files = False
-        if os.path.dirname(self.active_document) != os.path.dirname(file_name):
-            change_watched_files = True
-
-        self.active_document = file_name
-        self.source = source
-
         params = {
             "textDocument": {
                 "languageId": "go",
@@ -637,17 +689,11 @@ class Commands:
         }
         self.send_notification(RPCMessage.notification("textDocument/didOpen", params))
 
-        if change_watched_files:
-            params = {
-                "changes": [{"uri": DocumentURI.from_path(file_name), "type": 1,}]
-            }
-            self.workspace_didChangeWatchedFiles(params)
-
     def _hide_completion(self, characters: str):
         pass
 
     @session.initialized
-    def textDocument_didChange(self, file_name: str, changes: dict):
+    def textDocument_didChange(self, file_name: str, changes: List[dict]):
         LOGGER.info("textDocument_didChange")
 
         params = {
@@ -669,7 +715,6 @@ class Commands:
 
         params = {"textDocument": {"uri": DocumentURI.from_path(file_name)}}
         self.send_notification(RPCMessage.notification("textDocument/didClose", params))
-        self.active_document = ""
 
     @session.initialized
     def textDocument_didSave(self, file_name: str):
@@ -760,11 +805,15 @@ class Commands:
         start_col: int,
         end_line: int,
         end_col: int,
+        diagnostics=None,
     ):
         LOGGER.info("textDocument_codeAction")
 
+        if not diagnostics:
+            diagnostics = []
+
         params = {
-            "context": {"diagnostics": []},
+            "context": {"diagnostics": diagnostics},
             "range": {
                 "end": {"character": end_col, "line": end_line},
                 "start": {"character": start_col, "line": start_line},
@@ -786,7 +835,18 @@ class Commands:
         )
 
     @session.initialized
-    def workspace_didChangeWatchedFiles(self, params: list):
+    def workspace_didChangeWatchedFiles(self, changes: List[dict]):
+        """
+        params = {
+                    "changes": [{"uri": DocumentURI.from_path(file_name), "type": 1,}]
+                }
+
+        type: 
+            1 -> Created
+            2 -> Changed
+            3 -> Deleted
+        """
+        params = {"changes": changes}
 
         self.send_notification(
             RPCMessage.notification("workspace/didChangeWatchedFiles", params)
@@ -1012,7 +1072,7 @@ class LSPClient(Commands):
             try:
                 self.exec_response(message)
             except Exception as err:
-                LOGGER.error(f"exec response error: {err}")
+                LOGGER.error(f"exec response error: {err}", exc_info=True)
             return
 
         try:
