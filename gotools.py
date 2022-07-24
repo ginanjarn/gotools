@@ -6,7 +6,6 @@ import re
 import threading
 import time
 
-from dataclasses import dataclass
 from functools import wraps
 from io import StringIO
 from pathlib import Path
@@ -50,13 +49,18 @@ class StatusMessage:
 STATUS_MESSAGE = StatusMessage()
 
 
-@dataclass
 class TextChangeItem:
     """Text change item"""
 
-    region: sublime.Region
-    text: str
-    offset_move: int = 0
+    __slots__ = ["region", "text", "offset_move"]
+
+    def __init__(self, region: sublime.Region, text: str, offset_move: int = 0):
+        self.region = region
+        self.text = text
+        self.offset_move = offset_move
+
+    def __repr__(self):
+        return f"TextChangeItem({repr(self.region)},{repr(self.text)},{repr(self.offset_move)})"
 
     def get_region(self, offset_move: int, /) -> sublime.Region:
         """get region adapted with cursor movement"""
