@@ -35,7 +35,7 @@ class StatusMessage:
 
     def set_status(self, message: str):
         view: sublime.View = sublime.active_window().active_view()
-        view.set_status(self.status_key, f"$_{message} ")
+        view.set_status(self.status_key, f"🔄 {message}")
 
     def reset_status(self):
         view: sublime.View = sublime.active_window().active_view()
