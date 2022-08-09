@@ -114,8 +114,8 @@ class GotoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
             move += change.offset_move
 
 
-class FileChanges:
-    """handle unbuffered file change"""
+class UnbufferedDocument:
+    """unbuffered document handler"""
 
     def __init__(self, file_name: str):
         self.file_name = file_name
@@ -572,7 +572,7 @@ class Workspace:
 
             except ViewNotFoundError:
                 # modify file without buffer
-                document = FileChanges(file_name)
+                document = UnbufferedDocument(file_name)
                 document.apply_text_changes(change["edits"])
 
         # focus active view
