@@ -638,7 +638,7 @@ class GoplsHandler(lsp.BaseHandler):
     def handle_window_workDoneProgress_create(self, message: lsp.RPCMessage):
         message_id = message.get("id")
         self.progress_token.add(message["params"]["token"])
-        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message_id, result=""))
+        GOPLS_CLIENT.send_response(message_id, result="")
 
     def handle_S_progress(self, message: lsp.RPCMessage):
         params = message["params"]
@@ -661,7 +661,7 @@ class GoplsHandler(lsp.BaseHandler):
 
     def handle_workspace_configuration(self, message: lsp.RPCMessage):
         message_id = message.get("id")
-        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message_id, result=[{}]))
+        GOPLS_CLIENT.send_response(message_id, result=[{}])
 
     def handle_window_logMessage(self, message: lsp.RPCMessage):
         params = message["params"]
@@ -670,7 +670,7 @@ class GoplsHandler(lsp.BaseHandler):
 
     def handle_client_registerCapability(self, message: lsp.RPCMessage):
         message_id = message.get("id")
-        GOPLS_CLIENT.send_response(lsp.RPCMessage.response(message_id, result=""))
+        GOPLS_CLIENT.send_response(message_id, result="")
 
     def handle_textDocument_documentSymbol(self, message: lsp.RPCMessage):
         if error := message.get("error"):
@@ -754,9 +754,7 @@ class GoplsHandler(lsp.BaseHandler):
         except Exception as err:
             LOGGER.error(err, exc_info=True)
         else:
-            GOPLS_CLIENT.send_response(
-                lsp.RPCMessage.response(message_id, result={"applied": True})
-            )
+            GOPLS_CLIENT.send_response(message_id, result={"applied": True})
 
     def handle_textDocument_prepareRename(self, message: lsp.RPCMessage):
         if error := message.get("error"):

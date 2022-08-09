@@ -9,7 +9,7 @@ import subprocess
 import threading
 from abc import ABC, abstractmethod
 from functools import wraps
-from typing import List, Union, Optional, Dict, Any
+from typing import List, Optional, Dict, Any
 from urllib.parse import urlparse, urlunparse, quote, unquote
 from urllib.request import pathname2url, url2pathname
 
@@ -260,34 +260,27 @@ class AbstractTransport(ABC):
         """terminate"""
 
 
+class Document:
+    """manage working document"""
+
+    def __init__(self, file_name: str, version: int = 0):
+        self.file_name = file_name
+        self.version = version
+
+    def next_version(self) -> int:
+        self.version += 1
+        return self.version
+
+    def get_uri(self) -> DocumentURI:
+        return DocumentURI.from_path(self.file_name)
+
+
 class Commands:
     """commands interface"""
 
     def __init__(self, transport: AbstractTransport):
-        self.request_id = -1
-        self.document_version_map = {}
+        self.documents: Dict[str, Document] = {}
         self.transport = transport
-
-    def get_request_id(self):
-        self.request_id += 1
-        return self.request_id
-
-    def get_document_version(
-        self, file_name: str, *, reset: bool, increment: bool = True
-    ):
-        if reset:
-            self.document_version_map[file_name] = 0
-
-        cur_version = self.document_version_map.get(file_name, 0)
-        if not increment:
-            return cur_version
-
-        cur_version += 1
-        self.document_version_map[file_name] = cur_version
-        return cur_version
-
-    def cancelRequest(self, request_id):
-        self.cancel_request(request_id)
 
     def initialize(
         self,
@@ -663,14 +656,12 @@ class Commands:
             ],
         }
 
-        self.send_request(
-            RPCMessage.request(self.get_request_id(), "initialize", params)
-        )
+        self.send_request("initialize", params)
 
     def initialized(self):
         LOGGER.info("initialized")
         params = {}
-        self.send_notification(RPCMessage.notification("initialized", params))
+        self.send_notification("initialized", params)
 
         # set session initialized
         session.initialize()
@@ -679,15 +670,19 @@ class Commands:
     def textDocument_didOpen(self, file_name: str, source: str):
         LOGGER.info("textDocument_didOpen")
 
+        document = Document(file_name)
+        # add document to working documents
+        self.documents[file_name] = document
+
         params = {
             "textDocument": {
                 "languageId": "go",
                 "text": source,
-                "uri": DocumentURI.from_path(file_name),
-                "version": self.get_document_version(file_name, reset=True),
+                "uri": document.get_uri(),
+                "version": document.version,
             }
         }
-        self.send_notification(RPCMessage.notification("textDocument/didOpen", params))
+        self.send_notification("textDocument/didOpen", params)
 
     def _hide_completion(self, characters: str):
         pass
@@ -696,106 +691,94 @@ class Commands:
     def textDocument_didChange(self, file_name: str, changes: List[dict]):
         LOGGER.info("textDocument_didChange")
 
-        params = {
-            "contentChanges": changes,
-            "textDocument": {
-                "uri": DocumentURI.from_path(file_name),
-                "version": self.get_document_version(file_name, reset=False),
-            },
-        }
-        LOGGER.debug("didChange: %s", params)
-        self._hide_completion(changes[0]["text"])
-        self.send_notification(
-            RPCMessage.notification("textDocument/didChange", params)
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "contentChanges": changes,
+                "textDocument": {
+                    "uri": document.get_uri(),
+                    "version": document.next_version(),
+                },
+            }
+            LOGGER.debug("didChange: %s", params)
+            self._hide_completion(changes[0]["text"])
+            self.send_notification("textDocument/didChange", params)
 
     @session.initialized
     def textDocument_didClose(self, file_name: str):
         LOGGER.info("textDocument_didClose")
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(file_name)}}
-        self.send_notification(RPCMessage.notification("textDocument/didClose", params))
+        if document := self.documents.get(file_name):
+            params = {"textDocument": {"uri": document.get_uri()}}
+            self.send_notification("textDocument/didClose", params)
+            # remove document from working documents
+            del self.documents[file_name]
+
 
     @session.initialized
     def textDocument_didSave(self, file_name: str):
         LOGGER.info("textDocument_didSave")
 
-        if file_name not in self.document_version_map:
-            LOGGER.debug(f"{file_name} not opened")
-            return
-
-        params = {"textDocument": {"uri": DocumentURI.from_path(file_name)}}
-        self.send_notification(RPCMessage.notification("textDocument/didSave", params))
+        if document := self.documents.get(file_name):
+            params = {"textDocument": {"uri": document.get_uri()}}
+            self.send_notification("textDocument/didSave", params)
 
     @session.initialized
     def textDocument_completion(self, file_name: str, row: int, col: int):
         LOGGER.info("textDocument_completion")
 
-        params = {
-            "context": {"triggerKind": 1},  # TODO: adapt KIND
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.send_request(
-            RPCMessage.request(self.get_request_id(), "textDocument/completion", params)
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "context": {"triggerKind": 1},  # TODO: adapt KIND
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/completion", params)
 
     @session.initialized
     def textDocument_hover(self, file_name: str, row: int, col: int):
         LOGGER.info("textDocument_hover")
 
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.send_request(
-            RPCMessage.request(self.get_request_id(), "textDocument/hover", params)
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/hover", params)
 
     @session.initialized
     def textDocument_formatting(self, file_name, tab_size=2):
         LOGGER.info("textDocument_formatting")
 
-        params = {
-            "options": {"insertSpaces": True, "tabSize": tab_size},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.send_request(
-            RPCMessage.request(self.get_request_id(), "textDocument/formatting", params)
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "options": {"insertSpaces": True, "tabSize": tab_size},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/formatting", params)
 
     @session.initialized
     def textDocument_semanticTokens_full(self, file_name: str):
         LOGGER.info("textDocument_semanticTokens_full")
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(file_name),}}
-        self.send_request(
-            RPCMessage.request(
-                self.get_request_id(), "textDocument/semanticTokens/full", params
-            )
-        )
+        if document := self.documents.get(file_name):
+            params = {"textDocument": {"uri": document.get_uri()}}
+            self.send_request("textDocument/semanticTokens/full", params)
 
     @session.initialized
     def textDocument_documentLink(self, file_name: str):
         LOGGER.info("textDocument_documentLink")
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(file_name),}}
-        self.send_request(
-            RPCMessage.request(
-                self.get_request_id(), "textDocument/documentLink", params
-            )
-        )
+        if document := self.documents.get(file_name):
+            params = {"textDocument": {"uri": document.get_uri()}}
+            self.send_request("textDocument/documentLink", params)
 
     @session.initialized
     def textDocument_documentSymbol(self, file_name: str):
         LOGGER.info("textDocument_documentSymbol")
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(file_name),}}
-        self.send_request(
-            RPCMessage.request(
-                self.get_request_id(), "textDocument/documentSymbol", params
-            )
-        )
+        if document := self.documents.get(file_name):
+            params = {"textDocument": {"uri": document.get_uri()}}
+            self.send_request("textDocument/documentSymbol", params)
 
     @session.initialized
     def textDocument_codeAction(
@@ -812,27 +795,21 @@ class Commands:
         if not diagnostics:
             diagnostics = []
 
-        params = {
-            "context": {"diagnostics": diagnostics},
-            "range": {
-                "end": {"character": end_col, "line": end_line},
-                "start": {"character": start_col, "line": start_line},
-            },
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        LOGGER.debug("codeAction params: %s", params)
-        self.send_request(
-            RPCMessage.request(self.get_request_id(), "textDocument/codeAction", params)
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "context": {"diagnostics": diagnostics},
+                "range": {
+                    "end": {"character": end_col, "line": end_line},
+                    "start": {"character": start_col, "line": start_line},
+                },
+                "textDocument": {"uri": document.get_uri()},
+            }
+            LOGGER.debug("codeAction params: %s", params)
+            self.send_request("textDocument/codeAction", params)
 
     @session.initialized
     def workspace_executeCommand(self, params: dict):
-
-        self.send_request(
-            RPCMessage.request(
-                self.get_request_id(), "workspace/executeCommand", params
-            )
-        )
+        self.send_request("workspace/executeCommand", params)
 
     @session.initialized
     def workspace_didChangeWatchedFiles(self, changes: List[dict]):
@@ -848,62 +825,51 @@ class Commands:
         """
         params = {"changes": changes}
 
-        self.send_notification(
-            RPCMessage.notification("workspace/didChangeWatchedFiles", params)
-        )
+        self.send_notification("workspace/didChangeWatchedFiles", params)
 
     @session.initialized
     def textDocument_prepareRename(self, file_name, row, col):
 
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.send_request(
-            RPCMessage.request(
-                self.get_request_id(), "textDocument/prepareRename", params
-            )
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/prepareRename", params)
 
     @session.initialized
     def textDocument_rename(self, file_name, row, col, new_name):
 
-        params = {
-            "newName": new_name,
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.send_request(
-            RPCMessage.request(self.get_request_id(), "textDocument/rename", params)
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "newName": new_name,
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/rename", params)
 
     @session.initialized
     def textDocument_definition(self, file_name, row, col):
 
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.send_request(
-            RPCMessage.request(self.get_request_id(), "textDocument/definition", params)
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/definition", params)
 
     @session.initialized
     def textDocument_declaration(self, file_name, row, col):
 
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.send_request(
-            RPCMessage.request(
-                self.get_request_id(), "textDocument/declaration", params
-            )
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/declaration", params)
 
     def exit(self):
-        self.send_notification(RPCMessage.notification("exit", {}))
-
+        self.send_notification("exit", {})
         # exit session
         session.exit()
 
@@ -1023,8 +989,13 @@ class LSPClient(Commands):
         self.command_map = {}
         self.command_map.update(handler.get_command_map())
 
-        # request method map
-        self.request_map = {}
+        # request
+        self.request_map: Dict[int, str] = {}
+        self.current_req_id = -1
+
+    def next_request_id(self):
+        self.current_req_id += 1
+        return self.current_req_id
 
     def run_server(self):
         """run server"""
@@ -1084,9 +1055,7 @@ class LSPClient(Commands):
             # send error status for request message
             if message_id is not None:
                 self.send_response(
-                    RPCMessage.response(
-                        message_id, error={"code": 9001, "message": str(err)}
-                    )
+                    message_id, error={"code": 9001, "message": str(err)}
                 )
 
     def exec_response(self, message: RPCMessage):
@@ -1106,29 +1075,32 @@ class LSPClient(Commands):
         # exec function
         func(params)
 
-    def send_request(self, message: RPCMessage):
+    def send_request(self, method: str, params: Any):
+        request_id = self.next_request_id()
+        message = RPCMessage.request(request_id, method, params)
+
         if self.request_map:
-            canceled_id = None
-            for req_id, method in self.request_map.items():
-                if message["method"] == method:
-                    canceled_id = req_id
+            # cancel all previous request
+            request_map_c = self.request_map.copy()
+            for req_id, req_method in request_map_c.items():
+                if req_method == method:
+                    self.cancel_request(req_id)
 
-            if canceled_id is not None:
-                self.cancel_request(canceled_id)
-
-        self.request_map[message["id"]] = message["method"]
+        self.request_map[request_id] = method
         self.transport.send_message(message)
 
-    def cancel_request(self, message_id: Union[str, int]):
-        message = RPCMessage.cancel_request(message_id)
-        self.request_map.pop(message_id)
+    def cancel_request(self, request_id: int):
+        message = RPCMessage.cancel_request(request_id)
+        self.request_map.pop(request_id)
         self.transport.send_message(message)
 
-    def send_response(self, message: RPCMessage):
-        self.transport.send_message(message)
+    def send_response(
+        self, request_id: int, result: Optional[Any] = None, error: Optional[Any] = None
+    ):
+        self.transport.send_message(RPCMessage.response(request_id, result, error))
 
-    def send_notification(self, message: RPCMessage):
-        self.transport.send_message(message)
+    def send_notification(self, method: str, params: Any):
+        self.transport.send_message(RPCMessage.notification(method, params))
 
 
 class StandardIO(AbstractTransport):
