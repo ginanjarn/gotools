@@ -670,6 +670,10 @@ class Commands:
     def textDocument_didOpen(self, file_name: str, source: str):
         LOGGER.info("textDocument_didOpen")
 
+        if file_name in self.documents:
+            LOGGER.debug(f"{repr(file_name)} has opened")
+            return
+
         document = Document(file_name)
         # add document to working documents
         self.documents[file_name] = document
@@ -712,7 +716,6 @@ class Commands:
             self.send_notification("textDocument/didClose", params)
             # remove document from working documents
             del self.documents[file_name]
-
 
     @session.initialized
     def textDocument_didSave(self, file_name: str):

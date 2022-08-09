@@ -477,7 +477,6 @@ class Workspace:
 
     def __init__(self):
         self.watcher = file_watcher.Watcher()
-        self.working_files = set()
 
     def set_project_root(self, path: str):
         self.watcher.set_root_folder(path)
@@ -487,20 +486,9 @@ class Workspace:
         _ = list(self.watcher.poll())
 
     def open_file(self, file_name: str, source: str = ""):
-        if file_name in self.working_files:
-            LOGGER.debug(f"{file_name} has opened")
-            return
-
-        self.working_files.add(file_name)
         GOPLS_CLIENT.textDocument_didOpen(file_name, source)
 
     def close_file(self, file_name: str):
-        try:
-            self.working_files.remove(file_name)
-        except KeyError:
-            # maybe file had buffered before initialize
-            pass
-
         GOPLS_CLIENT.textDocument_didClose(file_name)
 
     @property
