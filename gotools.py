@@ -80,7 +80,8 @@ class TextChangeItem:
         return cls(region, new_text, move)
 
 
-TEXT_CHANGE_SYNC = threading.Lock()
+TEXT_CHANGE_PROCESS = threading.Event()
+TEXT_CHANGE_SYNC = threading.Event()
 
 
 class GotoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
@@ -92,7 +93,6 @@ class GotoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
             return
 
         try:
-            TEXT_CHANGE_SYNC.acquire()
             text_changes = [
                 TextChangeItem.from_rpc(self.view, change) for change in text_changes
             ]
@@ -101,7 +101,7 @@ class GotoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
         else:
             self.apply_changes(edit, text_changes)
         finally:
-            TEXT_CHANGE_SYNC.release()
+            TEXT_CHANGE_SYNC.set()
 
     def apply_changes(self, edit: sublime.Edit, changes: List[TextChangeItem]):
         """apply text changes"""
@@ -122,17 +122,20 @@ class UnbufferedDocument:
         self.buffer: StringIO = StringIO()
 
     def apply_text_changes(self, text_changes: List[dict]):
-        # load
-        with open(self.file_name, "r") as file:
-            self.buffer = StringIO(file.read())
+        try:
+            # load
+            with open(self.file_name, "r") as file:
+                self.buffer = StringIO(file.read())
 
-        # apply
-        for change in text_changes:
-            self._apply_text_change(change)
+            # apply
+            for change in text_changes:
+                self._apply_text_change(change)
 
-        # save
-        with open(self.file_name, "w") as file:
-            file.write(self.buffer.getvalue())
+            # save
+            with open(self.file_name, "w") as file:
+                file.write(self.buffer.getvalue())
+        finally:
+            TEXT_CHANGE_SYNC.set()
 
     def _apply_text_change(self, change):
         start = change["range"]["start"]
@@ -545,11 +548,13 @@ class Workspace:
         active_view = ACTIVE_DOCUMENT.view
 
         for change in document_changes:
-            while True:
-                if TEXT_CHANGE_SYNC.locked():
-                    time.sleep(0.5)
-                    continue
-                break
+            if TEXT_CHANGE_PROCESS.is_set():
+                LOGGER.debug("waiting change process")
+                TEXT_CHANGE_SYNC.wait()
+                LOGGER.debug("change process done")
+
+            TEXT_CHANGE_PROCESS.set()
+            TEXT_CHANGE_SYNC.clear()
 
             file_name = lsp.DocumentURI(change["textDocument"]["uri"]).to_path()
 
@@ -562,6 +567,8 @@ class Workspace:
                 # modify file without buffer
                 document = UnbufferedDocument(file_name)
                 document.apply_text_changes(change["edits"])
+            finally:
+                TEXT_CHANGE_PROCESS.clear()
 
         # focus active view
         self.focus_view(active_view)
