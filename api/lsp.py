@@ -3,11 +3,13 @@
 import json
 import logging
 import os
+import queue
 import re
 import subprocess
 import threading
 from abc import ABC, abstractmethod
-from typing import Callable
+from functools import wraps
+from typing import List, Optional, Dict, Any
 from urllib.parse import urlparse, urlunparse, quote, unquote
 from urllib.request import pathname2url, url2pathname
 
@@ -35,6 +37,10 @@ class ServerOffline(Exception):
     """server offline"""
 
 
+class NotInitialized(Exception):
+    """server not initialized"""
+
+
 class DocumentURI(str):
     """document uri"""
 
@@ -59,48 +65,24 @@ class RPCMessage(dict):
         super().__init__(kwargs)
         if mapping:
             self.update(mapping)
+        # set jsonrpc version
+        self["jsonrpc"] = self.JSONRPC_VERSION
 
     @classmethod
     def from_str(cls, s: str, /):
         return cls(json.loads(s))
 
     def to_bytes(self) -> bytes:
-        self["jsonrpc"] = self.JSONRPC_VERSION
         message_str = json.dumps(self)
         message_encoded = message_str.encode(self.CONTENT_ENCODING)
 
         header = f"Content-Length: {len(message_encoded)}"
         return b"\r\n\r\n".join([header.encode(self.HEADER_ENCODING), message_encoded])
 
-    _content_length_pattern = re.compile(r"^Content-Length: (\d+)$", flags=re.MULTILINE)
-
-    @staticmethod
-    def get_content_length(s: str):
-        if found := RPCMessage._content_length_pattern.search(s):
-            return int(found.group(1))
-        raise ValueError("unable find Content-Length")
-
     @classmethod
     def from_bytes(cls, b: bytes, /):
         try:
-            header, content = b.split(b"\r\n\r\n")
-        except (ValueError, TypeError, AttributeError) as err:
-            raise InvalidMessage(
-                f"Unable get Content-Length, {repr(err)}, content: {repr(b)}"
-            ) from err
-
-        defined_length = cls.get_content_length(header.decode(cls.HEADER_ENCODING))
-        expected_length = len(content)
-
-        if expected_length < defined_length:
-            raise ContentIncomplete(
-                f"want {defined_length}, expected {expected_length}"
-            )
-        elif expected_length > defined_length:
-            raise ContentOverflow(f"want {defined_length}, expected {expected_length}")
-
-        try:
-            message_str = content.decode(cls.CONTENT_ENCODING)
+            message_str = b.decode(cls.CONTENT_ENCODING)
             message = json.loads(message_str)
 
             if message["jsonrpc"] != cls.JSONRPC_VERSION:
@@ -223,257 +205,96 @@ class Stream:
             return content
 
 
+class Session:
+    """project session"""
+
+    def __init__(self):
+        self.is_initialized = False
+
+    def initialized(self, func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if self.is_initialized:
+                return func(*args, **kwargs)
+
+            raise NotInitialized("project not initialized")
+
+        return wrapper
+
+    def initialize(self):
+        self.is_initialized = True
+
+    def exit(self):
+        self.is_initialized = False
+
+
+# project session
+session = Session()
+
+
 class AbstractTransport(ABC):
     """abstract transport"""
 
     @abstractmethod
-    def request(self, message: RPCMessage):
-        """request message"""
+    def run_server(self, command_list: List[str]):
+        """run server"""
 
     @abstractmethod
-    def notify(self, message: RPCMessage):
-        """notify message"""
+    def is_running(self):
+        """check if server is running"""
 
     @abstractmethod
-    def cancel_request(self, message: RPCMessage):
-        """cancel request"""
+    def set_receiver(self, q: queue.Queue):
+        """set message receiver"""
 
     @abstractmethod
-    def respond(self, message: RPCMessage):
-        """respond request"""
+    def send_message(self, message: RPCMessage):
+        """send message"""
 
     @abstractmethod
-    def register_command(self, method: str, callable: Callable[[RPCMessage], None]):
-        """register command"""
-
-    @abstractmethod
-    def handle_received_message(self, message: RPCMessage):
-        """handle received message"""
+    def listen(self):
+        """listen server message"""
 
     @abstractmethod
     def terminate(self):
         """terminate"""
 
 
-class LSPClient:
-    """LSP client"""
+class Document:
+    """manage working document"""
 
-    def __init__(self):
-        self.transport: AbstractTransport = None
+    def __init__(self, file_name: str, version: int = 0):
+        self.file_name = file_name
+        self.version = version
 
-        # server status
-        self.server_running = False
-        self.server_capabilities = {}
+    def next_version(self) -> int:
+        self.version += 1
+        return self.version
 
-        # project status
-        self.is_initialized = False
+    def get_uri(self) -> DocumentURI:
+        return DocumentURI.from_path(self.file_name)
 
-        self.initialize_options = {}
 
-        # request
-        self.request_id = 0
-        # active document
-        self.active_document = ""
-        self.source = ""
-        # document version
-        self.document_version_map = {}
+class Commands:
+    """commands interface"""
 
-    def reset_session(self):
-        # terminate process
-        if self.transport:
-            self.transport.terminate()
+    def __init__(self, transport: AbstractTransport):
+        self.documents: Dict[str, Document] = {}
+        self.transport = transport
 
-        self.transport = None
-
-        # server status
-        self.server_running = False
-        self.server_capabilities = {}
-
-        # project status
-        self.is_initialized = False
-
-        self.initialize_options = {}
-
-        # request
-        self.request_id = 0
-        # active document
-        self.active_document = ""
-        # document version
-        self.document_version_map = {}
-
-    def get_request_id(self):
-        self.request_id += 1
-        return self.request_id
-
-    def get_document_version(
-        self, file_name: str, *, reset: bool, increment: bool = True
+    def initialize(
+        self,
+        project_path: str,
+        client_name: str = "TextEditor",
+        client_version: str = "1.0",
     ):
-        if reset:
-            self.document_version_map[file_name] = 0
-
-        cur_version = self.document_version_map.get(file_name, 0)
-        if not increment:
-            return cur_version
-
-        cur_version += 1
-        self.document_version_map[file_name] = cur_version
-        return cur_version
-
-    def run_server(self, executable="", *args):
-        raise NotImplementedError()
-
-    # server message handler
-
-    def handle_initialize(self, params: RPCMessage):
-        """handle initialize"""
-
-    def handle_textDocument_completion(self, params: RPCMessage):
-        """handle document completion"""
-
-    def handle_textDocument_hover(self, params: RPCMessage):
-        """handle document hover"""
-
-    def handle_textDocument_formatting(self, params: RPCMessage):
-        """handle document formatting"""
-
-    def handle_textDocument_semanticTokens_full(self, params: RPCMessage):
-        """handle document semantic tokens"""
-
-    def handle_workspace_semanticTokens_refresh(self, params: RPCMessage):
-        """handle workspace semanticTokens refresh request"""
-
-    def handle_workspace_applyEdit(self, params: RPCMessage):
-        """handle workspace apply edit"""
-
-    def handle_client_registerCapability(self, params: RPCMessage):
-        """handle client registerCapability"""
-
-    def handle_client_unregisterCapability(self, params: RPCMessage):
-        """handle client unregisterCapability"""
-
-    def handle_textDocument_documentLink(self, params: RPCMessage):
-        """handle document link"""
-
-    def handle_textDocument_documentSymbol(self, params: RPCMessage):
-        """handle document symbol"""
-
-    def handle_textDocument_codeAction(self, params: RPCMessage):
-        """handle document code action"""
-
-    def handle_S_progress(self, params: RPCMessage):
-        """handle progress"""
-
-    def handle_textDocument_publishDiagnostics(self, params: RPCMessage):
-        """handle publish diagnostic"""
-
-    def handle_workspace_configuration(self, params):
-        """handle workspace configuration"""
-
-    def handle_window_workDoneProgress_create(self, params):
-        """handle work progress done create"""
-
-    def handle_window_showMessage(self, message: RPCMessage):
-        """handle show message"""
-
-    def handle_window_logMessage(self, message: RPCMessage):
-        """handle log message"""
-
-    def handle_textDocument_prepareRename(self, params: RPCMessage):
-        """handle document prepare rename"""
-
-    def handle_textDocument_rename(self, params: RPCMessage):
-        """handle document rename"""
-
-    def handle_textDocument_definition(self, params: RPCMessage):
-        """handle document definition"""
-
-    def handle_textDocument_declaration(self, params: RPCMessage):
-        """handle document definition"""
-
-    def _register_commands(self):
-        self.transport.register_command("initialize", self.handle_initialize)
-        self.transport.register_command(
-            "textDocument/publishDiagnostics",
-            self.handle_textDocument_publishDiagnostics,
-        )
-        self.transport.register_command(
-            "workspace/configuration", self.handle_workspace_configuration
-        )
-        self.transport.register_command(
-            "window/workDoneProgress/create", self.handle_window_workDoneProgress_create
-        )
-        self.transport.register_command(
-            "window/showMessage", self.handle_window_showMessage
-        )
-        self.transport.register_command(
-            "window/logMessage", self.handle_window_logMessage
-        )
-        self.transport.register_command(
-            "textDocument/documentLink", self.handle_textDocument_documentLink
-        )
-        self.transport.register_command(
-            "textDocument/hover", self.handle_textDocument_hover
-        )
-        self.transport.register_command(
-            "textDocument/completion", self.handle_textDocument_completion
-        )
-        self.transport.register_command(
-            "textDocument/formatting", self.handle_textDocument_formatting
-        )
-        self.transport.register_command(
-            "textDocument/documentSymbol", self.handle_textDocument_documentSymbol
-        )
-        self.transport.register_command(
-            "textDocument/codeAction", self.handle_textDocument_codeAction
-        )
-        self.transport.register_command("$/progress", self.handle_S_progress)
-        self.transport.register_command(
-            "textDocument/semanticTokens/full",
-            self.handle_textDocument_semanticTokens_full,
-        )
-        self.transport.register_command(
-            "workspace/semanticTokens/refresh",
-            self.handle_workspace_semanticTokens_refresh,
-        )
-        self.transport.register_command(
-            "workspace/applyEdit", self.handle_workspace_applyEdit
-        )
-        self.transport.register_command(
-            "client/registerCapability", self.handle_client_registerCapability
-        )
-        self.transport.register_command(
-            "client/unregisterCapability", self.handle_client_unregisterCapability
-        )
-        self.transport.register_command(
-            "textDocument/prepareRename", self.handle_textDocument_prepareRename
-        )
-        self.transport.register_command(
-            "textDocument/rename", self.handle_textDocument_rename
-        )
-        self.transport.register_command(
-            "textDocument/declaration", self.handle_textDocument_declaration
-        )
-        self.transport.register_command(
-            "textDocument/definition", self.handle_textDocument_definition
-        )
-
-    def exit(self):
-        self.transport.terminate()
-
-    def cancelRequest(self):
-        self.transport.cancel_request()
-
-    def initialize(self, project_path: str):
         """initialize server"""
 
         LOGGER.info("initialize")
 
-        if not self.server_running:
-            raise ServerOffline
-
         params = {
-            "processId": os.getpid(),
-            "clientInfo": {"name": "Sublime Text", "version": "4126"},
+            "processId": 2372,
+            "clientInfo": {"name": client_name, "version": client_version},
             "locale": "en-us",
             "rootPath": project_path,
             "rootUri": DocumentURI.from_path(project_path),
@@ -487,8 +308,11 @@ class LSPClient:
                         "normalizesLineEndings": True,
                         "changeAnnotationSupport": {"groupsOnLabel": True},
                     },
-                    "didChangeConfiguration": {"dynamicRegistration": True},
-                    "didChangeWatchedFiles": {"dynamicRegistration": True},
+                    "configuration": True,
+                    "didChangeWatchedFiles": {
+                        "dynamicRegistration": True,
+                        "relativePatternSupport": True,
+                    },
                     "symbol": {
                         "dynamicRegistration": True,
                         "symbolKind": {
@@ -522,10 +346,11 @@ class LSPClient:
                             ]
                         },
                         "tagSupport": {"valueSet": [1]},
+                        "resolveSupport": {"properties": ["location.range"]},
                     },
                     "codeLens": {"refreshSupport": True},
                     "executeCommand": {"dynamicRegistration": True},
-                    "configuration": True,
+                    "didChangeConfiguration": {"dynamicRegistration": True},
                     "workspaceFolders": True,
                     "semanticTokens": {"refreshSupport": True},
                     "fileOperations": {
@@ -537,6 +362,9 @@ class LSPClient:
                         "willRename": True,
                         "willDelete": True,
                     },
+                    "inlineValue": {"refreshSupport": True},
+                    "inlayHint": {"refreshSupport": True},
+                    "diagnostics": {"refreshSupport": True},
                 },
                 "textDocument": {
                     "publishDiagnostics": {
@@ -556,7 +384,8 @@ class LSPClient:
                         "dynamicRegistration": True,
                         "contextSupport": True,
                         "completionItem": {
-                            "snippetSupport": False,
+                            # "snippetSupport": True,
+                            "snippetSupport": False,  # accept text only
                             "commitCharactersSupport": True,
                             "documentationFormat": ["markdown", "plaintext"],
                             "deprecatedSupport": True,
@@ -570,8 +399,13 @@ class LSPClient:
                                     "additionalTextEdits",
                                 ]
                             },
-                            "insertTextModeSupport": {"valueSet": [1]},
+                            # "insertTextModeSupport": {"valueSet": [1, 2]},
+                            "insertTextModeSupport": {
+                                "valueSet": [1]
+                            },  # accept text only
+                            "labelDetailsSupport": True,
                         },
+                        "insertTextMode": 2,
                         "completionItemKind": {
                             "valueSet": [
                                 1,
@@ -599,6 +433,14 @@ class LSPClient:
                                 23,
                                 24,
                                 25,
+                            ]
+                        },
+                        "completionList": {
+                            "itemDefaults": [
+                                "commitCharacters",
+                                "editRange",
+                                "insertTextFormat",
+                                "insertTextMode",
                             ]
                         },
                     },
@@ -703,6 +545,10 @@ class LSPClient:
                         "dynamicRegistration": True,
                         "rangeLimit": 5000,
                         "lineFoldingOnly": True,
+                        "foldingRangeKind": {
+                            "valueSet": ["comment", "imports", "region"]
+                        },
+                        "foldingRange": {"collapsedText": False},
                     },
                     "declaration": {"dynamicRegistration": True, "linkSupport": True},
                     "selectionRange": {"dynamicRegistration": True},
@@ -732,6 +578,7 @@ class LSPClient:
                             "number",
                             "regexp",
                             "operator",
+                            "decorator",
                         ],
                         "tokenModifiers": [
                             "declaration",
@@ -749,8 +596,28 @@ class LSPClient:
                         "requests": {"range": True, "full": {"delta": True}},
                         "multilineTokenSupport": False,
                         "overlappingTokenSupport": False,
+                        "serverCancelSupport": True,
+                        "augmentsSyntaxTokens": True,
                     },
                     "linkedEditingRange": {"dynamicRegistration": True},
+                    "typeHierarchy": {"dynamicRegistration": True},
+                    "inlineValue": {"dynamicRegistration": True},
+                    "inlayHint": {
+                        "dynamicRegistration": True,
+                        "resolveSupport": {
+                            "properties": [
+                                "tooltip",
+                                "textEdits",
+                                "label.tooltip",
+                                "label.location",
+                                "label.command",
+                            ]
+                        },
+                    },
+                    "diagnostic": {
+                        "dynamicRegistration": True,
+                        "relatedDocumentSupport": False,
+                    },
                 },
                 "window": {
                     "showMessage": {
@@ -760,8 +627,23 @@ class LSPClient:
                     "workDoneProgress": True,
                 },
                 "general": {
+                    "staleRequestSupport": {
+                        "cancel": True,
+                        "retryOnContentModified": [
+                            "textDocument/semanticTokens/full",
+                            "textDocument/semanticTokens/range",
+                            "textDocument/semanticTokens/full/delta",
+                        ],
+                    },
                     "regularExpressions": {"engine": "ECMAScript", "version": "ES2020"},
                     "markdown": {"parser": "marked", "version": "1.1.0"},
+                    "positionEncodings": ["utf-16"],
+                },
+                "notebookDocument": {
+                    "synchronization": {
+                        "dynamicRegistration": True,
+                        "executionSummarySupport": True,
+                    }
                 },
             },
             "initializationOptions": {},
@@ -773,176 +655,135 @@ class LSPClient:
                 }
             ],
         }
-        if self.initialize_options:
-            params.update(self.initialize_options)
 
-        self.transport.request(
-            RPCMessage.request(self.get_request_id(), "initialize", params)
-        )
+        self.send_request("initialize", params)
 
     def initialized(self):
         LOGGER.info("initialized")
         params = {}
-        self.transport.notify(RPCMessage.notification("initialized", params))
-        self.is_initialized = True
+        self.send_notification("initialized", params)
 
+        # set session initialized
+        session.initialize()
+
+    @session.initialized
     def textDocument_didOpen(self, file_name: str, source: str):
         LOGGER.info("textDocument_didOpen")
 
-        if not self.server_running:
-            raise ServerOffline
-
-        if self.active_document == file_name and self.source == source:
-            LOGGER.debug("document already opened")
+        if file_name in self.documents:
+            LOGGER.debug(f"{repr(file_name)} has opened")
             return
 
-        change_watched_files = False
-        if os.path.dirname(self.active_document) != os.path.dirname(file_name):
-            change_watched_files = True
-
-        self.active_document = file_name
-        self.source = source
+        document = Document(file_name)
+        # add document to working documents
+        self.documents[file_name] = document
 
         params = {
             "textDocument": {
                 "languageId": "go",
                 "text": source,
-                "uri": DocumentURI.from_path(file_name),
-                "version": self.get_document_version(file_name, reset=True),
+                "uri": document.get_uri(),
+                "version": document.version,
             }
         }
-        self.transport.notify(RPCMessage.notification("textDocument/didOpen", params))
-
-        if change_watched_files:
-            params = {
-                "changes": [{"uri": DocumentURI.from_path(file_name), "type": 1,}]
-            }
-            self.workspace_didChangeWatchedFiles(params)
+        self.send_notification("textDocument/didOpen", params)
 
     def _hide_completion(self, characters: str):
         pass
 
-    def textDocument_didChange(self, file_name: str, changes: dict):
+    @session.initialized
+    def textDocument_didChange(self, file_name: str, changes: List[dict]):
         LOGGER.info("textDocument_didChange")
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {
+                "contentChanges": changes,
+                "textDocument": {
+                    "uri": document.get_uri(),
+                    "version": document.next_version(),
+                },
+            }
+            LOGGER.debug("didChange: %s", params)
+            self._hide_completion(changes[0]["text"])
+            self.send_notification("textDocument/didChange", params)
 
-        params = {
-            "contentChanges": changes,
-            "textDocument": {
-                "uri": DocumentURI.from_path(file_name),
-                "version": self.get_document_version(file_name, reset=False),
-            },
-        }
-        LOGGER.debug("didChange: %s", params)
-        self._hide_completion(changes[0]["text"])
-        self.transport.notify(RPCMessage.notification("textDocument/didChange", params))
-
+    @session.initialized
     def textDocument_didClose(self, file_name: str):
         LOGGER.info("textDocument_didClose")
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {"textDocument": {"uri": document.get_uri()}}
+            self.send_notification("textDocument/didClose", params)
+            # remove document from working documents
+            del self.documents[file_name]
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(file_name)}}
-        self.transport.notify(RPCMessage.notification("textDocument/didClose", params))
-        self.active_document = ""
-
+    @session.initialized
     def textDocument_didSave(self, file_name: str):
         LOGGER.info("textDocument_didSave")
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {"textDocument": {"uri": document.get_uri()}}
+            self.send_notification("textDocument/didSave", params)
 
-        if file_name not in self.document_version_map:
-            LOGGER.debug(f"{file_name} not opened")
-            return
-
-        params = {"textDocument": {"uri": DocumentURI.from_path(file_name)}}
-        self.transport.notify(RPCMessage.notification("textDocument/didSave", params))
-
+    @session.initialized
     def textDocument_completion(self, file_name: str, row: int, col: int):
         LOGGER.info("textDocument_completion")
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {
+                "context": {"triggerKind": 1},  # TODO: adapt KIND
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/completion", params)
 
-        params = {
-            "context": {"triggerKind": 1},  # TODO: adapt KIND
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.transport.request(
-            RPCMessage.request(self.get_request_id(), "textDocument/completion", params)
-        )
-
+    @session.initialized
     def textDocument_hover(self, file_name: str, row: int, col: int):
         LOGGER.info("textDocument_hover")
 
-        if not self.server_running:
-            raise ServerOffline
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.transport.request(
-            RPCMessage.request(self.get_request_id(), "textDocument/hover", params)
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/hover", params)
 
+    @session.initialized
     def textDocument_formatting(self, file_name, tab_size=2):
         LOGGER.info("textDocument_formatting")
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {
+                "options": {"insertSpaces": True, "tabSize": tab_size},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/formatting", params)
 
-        params = {
-            "options": {"insertSpaces": True, "tabSize": tab_size},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.transport.request(
-            RPCMessage.request(self.get_request_id(), "textDocument/formatting", params)
-        )
-
+    @session.initialized
     def textDocument_semanticTokens_full(self, file_name: str):
         LOGGER.info("textDocument_semanticTokens_full")
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {"textDocument": {"uri": document.get_uri()}}
+            self.send_request("textDocument/semanticTokens/full", params)
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(file_name),}}
-        self.transport.request(
-            RPCMessage.request(
-                self.get_request_id(), "textDocument/semanticTokens/full", params
-            )
-        )
-
+    @session.initialized
     def textDocument_documentLink(self, file_name: str):
         LOGGER.info("textDocument_documentLink")
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {"textDocument": {"uri": document.get_uri()}}
+            self.send_request("textDocument/documentLink", params)
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(file_name),}}
-        self.transport.request(
-            RPCMessage.request(
-                self.get_request_id(), "textDocument/documentLink", params
-            )
-        )
-
+    @session.initialized
     def textDocument_documentSymbol(self, file_name: str):
         LOGGER.info("textDocument_documentSymbol")
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {"textDocument": {"uri": document.get_uri()}}
+            self.send_request("textDocument/documentSymbol", params)
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(file_name),}}
-        self.transport.request(
-            RPCMessage.request(
-                self.get_request_id(), "textDocument/documentSymbol", params
-            )
-        )
-
+    @session.initialized
     def textDocument_codeAction(
         self,
         file_name: str,
@@ -950,101 +791,319 @@ class LSPClient:
         start_col: int,
         end_line: int,
         end_col: int,
+        diagnostics=None,
     ):
         LOGGER.info("textDocument_codeAction")
 
-        if not self.server_running:
-            raise ServerOffline
+        if not diagnostics:
+            diagnostics = []
 
-        params = {
-            "context": {"diagnostics": []},
-            "range": {
-                "end": {"character": end_col, "line": end_line},
-                "start": {"character": start_col, "line": start_line},
-            },
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        LOGGER.debug("codeAction params: %s", params)
-        self.transport.request(
-            RPCMessage.request(self.get_request_id(), "textDocument/codeAction", params)
-        )
+        if document := self.documents.get(file_name):
+            params = {
+                "context": {"diagnostics": diagnostics},
+                "range": {
+                    "end": {"character": end_col, "line": end_line},
+                    "start": {"character": start_col, "line": start_line},
+                },
+                "textDocument": {"uri": document.get_uri()},
+            }
+            LOGGER.debug("codeAction params: %s", params)
+            self.send_request("textDocument/codeAction", params)
 
+    @session.initialized
     def workspace_executeCommand(self, params: dict):
+        self.send_request("workspace/executeCommand", params)
 
-        if not self.server_running:
-            raise ServerOffline
+    @session.initialized
+    def workspace_didChangeWatchedFiles(self, changes: List[dict]):
+        """
+        params = {
+                    "changes": [{"uri": DocumentURI.from_path(file_name), "type": 1,}]
+                }
 
-        self.transport.request(
-            RPCMessage.request(
-                self.get_request_id(), "workspace/executeCommand", params
-            )
-        )
+        type: 
+            1 -> Created
+            2 -> Changed
+            3 -> Deleted
+        """
+        params = {"changes": changes}
 
-    def workspace_didChangeWatchedFiles(self, params: list):
+        self.send_notification("workspace/didChangeWatchedFiles", params)
 
-        if not self.server_running:
-            raise ServerOffline
-
-        self.transport.notify(
-            RPCMessage.notification("workspace/didChangeWatchedFiles", params)
-        )
-
+    @session.initialized
     def textDocument_prepareRename(self, file_name, row, col):
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/prepareRename", params)
 
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.transport.request(
-            RPCMessage.request(
-                self.get_request_id(), "textDocument/prepareRename", params
-            )
-        )
-
+    @session.initialized
     def textDocument_rename(self, file_name, row, col, new_name):
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {
+                "newName": new_name,
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/rename", params)
 
-        params = {
-            "newName": new_name,
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.transport.request(
-            RPCMessage.request(self.get_request_id(), "textDocument/rename", params)
-        )
-
+    @session.initialized
     def textDocument_definition(self, file_name, row, col):
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/definition", params)
 
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
-        }
-        self.transport.request(
-            RPCMessage.request(self.get_request_id(), "textDocument/definition", params)
-        )
-
+    @session.initialized
     def textDocument_declaration(self, file_name, row, col):
 
-        if not self.server_running:
-            raise ServerOffline
+        if document := self.documents.get(file_name):
+            params = {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": document.get_uri()},
+            }
+            self.send_request("textDocument/declaration", params)
 
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(file_name)},
+    def exit(self):
+        self.send_notification("exit", {})
+        # exit session
+        session.exit()
+
+
+class BaseHandler:
+    """base received command handler"""
+
+    def handle_initialize(self, params: RPCMessage):
+        """handle initialize"""
+
+    def handle_textDocument_completion(self, params: RPCMessage):
+        """handle document completion"""
+
+    def handle_textDocument_hover(self, params: RPCMessage):
+        """handle document hover"""
+
+    def handle_textDocument_formatting(self, params: RPCMessage):
+        """handle document formatting"""
+
+    def handle_textDocument_semanticTokens_full(self, params: RPCMessage):
+        """handle document semantic tokens"""
+
+    def handle_workspace_semanticTokens_refresh(self, params: RPCMessage):
+        """handle workspace semanticTokens refresh request"""
+
+    def handle_workspace_applyEdit(self, params: RPCMessage):
+        """handle workspace apply edit"""
+
+    def handle_client_registerCapability(self, params: RPCMessage):
+        """handle client registerCapability"""
+
+    def handle_client_unregisterCapability(self, params: RPCMessage):
+        """handle client unregisterCapability"""
+
+    def handle_textDocument_documentLink(self, params: RPCMessage):
+        """handle document link"""
+
+    def handle_textDocument_documentSymbol(self, params: RPCMessage):
+        """handle document symbol"""
+
+    def handle_textDocument_codeAction(self, params: RPCMessage):
+        """handle document code action"""
+
+    def handle_S_progress(self, params: RPCMessage):
+        """handle progress"""
+
+    def handle_textDocument_publishDiagnostics(self, params: RPCMessage):
+        """handle publish diagnostic"""
+
+    def handle_workspace_configuration(self, params: RPCMessage):
+        """handle workspace configuration"""
+
+    def handle_window_workDoneProgress_create(self, params: RPCMessage):
+        """handle work progress done create"""
+
+    def handle_workspace_executeCommand(self, params: RPCMessage):
+        """handle workspace executeCommand"""
+
+    def handle_window_showMessage(self, message: RPCMessage):
+        """handle show message"""
+
+    def handle_window_logMessage(self, message: RPCMessage):
+        """handle log message"""
+
+    def handle_textDocument_prepareRename(self, params: RPCMessage):
+        """handle document prepare rename"""
+
+    def handle_textDocument_rename(self, params: RPCMessage):
+        """handle document rename"""
+
+    def handle_textDocument_definition(self, params: RPCMessage):
+        """handle document definition"""
+
+    def handle_textDocument_declaration(self, params: RPCMessage):
+        """handle document definition"""
+
+    def get_command_map(self):
+        command_map = {
+            "initialize": self.handle_initialize,
+            "textDocument/publishDiagnostics": self.handle_textDocument_publishDiagnostics,
+            "workspace/configuration": self.handle_workspace_configuration,
+            "window/workDoneProgress/create": self.handle_window_workDoneProgress_create,
+            "window/showMessage": self.handle_window_showMessage,
+            "window/logMessage": self.handle_window_logMessage,
+            "textDocument/documentLink": self.handle_textDocument_documentLink,
+            "textDocument/hover": self.handle_textDocument_hover,
+            "textDocument/completion": self.handle_textDocument_completion,
+            "textDocument/formatting": self.handle_textDocument_formatting,
+            "textDocument/documentSymbol": self.handle_textDocument_documentSymbol,
+            "textDocument/codeAction": self.handle_textDocument_codeAction,
+            "$/progress": self.handle_S_progress,
+            "textDocument/semanticTokens/full": self.handle_textDocument_semanticTokens_full,
+            "workspace/semanticTokens/refresh": self.handle_workspace_semanticTokens_refresh,
+            "workspace/applyEdit": self.handle_workspace_applyEdit,
+            "workspace/executeCommand": self.handle_workspace_executeCommand,
+            "client/registerCapability": self.handle_client_registerCapability,
+            "client/unregisterCapability": self.handle_client_unregisterCapability,
+            "textDocument/prepareRename": self.handle_textDocument_prepareRename,
+            "textDocument/rename": self.handle_textDocument_rename,
+            "textDocument/declaration": self.handle_textDocument_declaration,
+            "textDocument/definition": self.handle_textDocument_definition,
         }
-        self.transport.request(
-            RPCMessage.request(
-                self.get_request_id(), "textDocument/declaration", params
-            )
-        )
+        return command_map
+
+
+class LSPClient(Commands):
+    """LSP client"""
+
+    def __init__(self, transport: AbstractTransport, handler: BaseHandler, /):
+
+        super().__init__(transport)
+
+        self.message_queue = queue.Queue()
+        self.transport.set_receiver(self.message_queue)
+
+        # command handler map
+        self.command_map = {}
+        self.command_map.update(handler.get_command_map())
+
+        # request
+        self.request_map: Dict[int, str] = {}
+        self.current_req_id = -1
+
+    def next_request_id(self):
+        self.current_req_id += 1
+        return self.current_req_id
+
+    def run_server(self):
+        """run server"""
+        self.transport.run_server()
+
+        # listen message
+        thread = threading.Thread(target=self._listen_message, daemon=True)
+        thread.start()
+
+    def server_running(self):
+        """check if server is running"""
+        return self.transport.is_running()
+
+    def shutdown_server(self):
+        """shutdown server"""
+        self.transport.terminate()
+
+    def _listen_message(self):
+        stream = Stream()
+        while True:
+            message = self.message_queue.get()
+            if not message:
+                return
+
+            try:
+                stream.put(message)
+                content = stream.get_content()
+            except (EOFError, ContentIncomplete):
+                pass
+            except Exception as err:
+                LOGGER.error(err)
+
+            else:
+                message = RPCMessage.from_bytes(content)
+                LOGGER.debug(f"Received << {message}")
+                self.exec_message(message)
+
+    def exec_message(self, message: RPCMessage):
+        """exec received message"""
+
+        message_id = message.get("id")
+        message_method = message.get("method")
+
+        if message_id is not None and message_id in self.request_map:
+            try:
+                self.exec_response(message)
+            except Exception as err:
+                LOGGER.error(f"exec response error: {err}", exc_info=True)
+            return
+
+        try:
+            self.exec_command(message_method, message)
+
+        except Exception as err:
+            LOGGER.error(err)
+
+            # send error status for request message
+            if message_id is not None:
+                self.send_response(
+                    message_id, error={"code": 9001, "message": str(err)}
+                )
+
+    def exec_response(self, message: RPCMessage):
+        try:
+            method = self.request_map.pop(message["id"])
+        except KeyError as err:
+            raise InvalidMessage(f"invalid response 'id': {err}")
+        else:
+            self.exec_command(method, message)
+
+    def exec_command(self, method: str, params: RPCMessage):
+        try:
+            func = self.command_map[method]
+        except KeyError as err:
+            raise InvalidMessage(f"method not found {err}")
+
+        # exec function
+        func(params)
+
+    def send_request(self, method: str, params: Any):
+        request_id = self.next_request_id()
+        message = RPCMessage.request(request_id, method, params)
+
+        if self.request_map:
+            # cancel all previous request
+            request_map_c = self.request_map.copy()
+            for req_id, req_method in request_map_c.items():
+                if req_method == method:
+                    self.cancel_request(req_id)
+
+        self.request_map[request_id] = method
+        self.transport.send_message(message)
+
+    def cancel_request(self, request_id: int):
+        message = RPCMessage.cancel_request(request_id)
+        self.request_map.pop(request_id)
+        self.transport.send_message(message)
+
+    def send_response(
+        self, request_id: int, result: Optional[Any] = None, error: Optional[Any] = None
+    ):
+        self.transport.send_message(RPCMessage.response(request_id, result, error))
+
+    def send_notification(self, method: str, params: Any):
+        self.transport.send_message(RPCMessage.notification(method, params))
 
 
 class StandardIO(AbstractTransport):
@@ -1052,24 +1111,27 @@ class StandardIO(AbstractTransport):
 
     BUFFER_LENGTH = 4096
 
-    def __init__(self, process_cmd: list):
+    def __init__(self, executable: str, arguments: List[str]):
 
-        # init process
-        self.server_process: subprocess.Popen = self._init_process(process_cmd)
-        self.command_map = {}
-        self.listen()
+        self.server_command = [executable]
+        if arguments:
+            self.server_command.extend(arguments)
 
-        # hold request method map
-        self.request_map = {}
+        self.server_process: subprocess.Popen = None
 
-    def register_command(self, method: str, handler: Callable[[RPCMessage], None]):
-        LOGGER.info(f"register_command {method}")
-        self.command_map[method] = handler
+        # set default queue
+        self.message_queue = queue.Queue()
 
-    def _init_process(self, command):
-        LOGGER.info("_init_process")
+    def set_receiver(self, q: queue.Queue):
+        """set message receiver"""
+        self.message_queue = q
 
+    def run_server(self):
+        LOGGER.info("run_server")
+
+        command = self.server_command
         startupinfo = None
+
         if os.name == "nt":
             # if on Windows, hide process window
             startupinfo = subprocess.STARTUPINFO()
@@ -1090,95 +1152,45 @@ class StandardIO(AbstractTransport):
             raise FileNotFoundError(f"'{command[0]}' not found in PATH") from err
         except Exception as err:
             raise Exception(f"run server error: {err}") from err
-        return process
+
+        # listen server message
+        self.server_process = process
+        self.listen()
+
+    def is_running(self):
+        """check if server is running"""
+
+        if not self.server_process:
+            return False
+        if self.server_process.poll():
+            return False
+
+        return True
 
     def send_message(self, message: RPCMessage):
         LOGGER.debug(f"Send >> {message}")
 
+        if self.server_process is None:
+            raise ServerOffline("server not started")
+
         bmessage = message.to_bytes()
-        self.server_process.stdin.write(bmessage)
-        self.server_process.stdin.flush()
-
-    def notify(self, message: RPCMessage):
-        LOGGER.info("notify")
-        self.send_message(message)
-
-    def respond(self, message: RPCMessage):
-        LOGGER.info("respond")
-        self.send_message(message)
-
-    def request(self, message: RPCMessage):
-        LOGGER.info("request")
-
-        self.request_map[message["id"]] = message["method"]
-        self.send_message(message)
-
-    def cancel_request(self):
-        LOGGER.info("cancel request")
-
-        for request_id, _ in self.request_map.items():
-            message = RPCMessage.cancel_request(id_=request_id)
-            self.send_message(message)
-
-        self.request_map = {}
-
-    def handle_received_message(self, message: RPCMessage):
-        """handle received message"""
-
-        method = message.get("method")
-        message_id = message.get("id")
-
-        if not method:
-            # if no method, find method in request_map
-            try:
-                method = self.request_map.pop(message_id)
-            except KeyError as err:
-                raise ValueError(
-                    f"invalid response, {message_id} not in {self.request_map}"
-                ) from err
-
         try:
-            func = self.command_map[method]
-        except KeyError as err:
-            raise ValueError(f"method not found {err}") from err
+            self.server_process.stdin.write(bmessage)
+            self.server_process.stdin.flush()
 
-        try:
-            func(message)
-        except Exception as err:
-            raise Exception(f"error execute {method}({message})") from err
-
-    def _process_stream(self, stream: Stream):
-        """process stream"""
-
-        while True:
-            content = stream.get_content()
-            message = RPCMessage.from_str(content.decode())
-            LOGGER.debug(f"Received << {message}")
-
-            try:
-                self.handle_received_message(message)
-
-            except Exception:
-                LOGGER.error("error process message", exc_info=True)
+        except OSError as err:
+            raise ServerOffline("server has terminated") from err
 
     def _listen_stdout(self):
         """listen stdout task"""
 
-        stream = Stream()
-
         while True:
             buf = self.server_process.stdout.read(self.BUFFER_LENGTH)
+            self.message_queue.put(buf)
+
             if not buf:
                 LOGGER.debug("stdout closed")
                 return
-
-            stream.put(buf)
-            try:
-                self._process_stream(stream)
-            except (EOFError, ContentIncomplete):
-                pass
-            except Exception as err:
-                LOGGER.error(err)
 
     def _listen_stderr(self):
         """listen stderr task"""
@@ -1206,4 +1218,6 @@ class StandardIO(AbstractTransport):
     def terminate(self):
         """terminate process"""
         LOGGER.info("terminate")
-        self.server_process.terminate()
+
+        if self.is_running():
+            self.server_process.terminate()
