@@ -331,7 +331,7 @@ class ViewNotFoundError(ValueError):
     """view not found in buffer"""
 
 
-class Document:
+class BufferedDocument:
     """buffered document handler"""
 
     def __init__(self, view: sublime.View):
@@ -414,11 +414,11 @@ class Document:
         pre_tag = False
         for line in lines.splitlines():
 
-            if open_pre := Document._start_pre_code_pattern.match(line):
+            if open_pre := BufferedDocument._start_pre_code_pattern.match(line):
                 line = "<div class='code_block'>%s" % line[open_pre.end() :]
                 pre_tag = True
 
-            if closing_pre := Document._end_pre_code_pattern.search(line):
+            if closing_pre := BufferedDocument._end_pre_code_pattern.search(line):
                 line = "%s</div>" % line[: closing_pre.start()]
                 pre_tag = False
 
@@ -554,7 +554,7 @@ class Workspace:
             file_name = lsp.DocumentURI(change["textDocument"]["uri"]).to_path()
 
             try:
-                document = Document.from_file(file_name)
+                document = BufferedDocument.from_file(file_name)
                 document.apply_text_changes(change["edits"])
                 document.save()
 
@@ -599,7 +599,7 @@ class Workspace:
         )
 
 
-ACTIVE_DOCUMENT = Document(sublime.View(0))
+ACTIVE_DOCUMENT = BufferedDocument(sublime.View(0))
 WORKSPACE = Workspace()
 
 
@@ -673,7 +673,7 @@ class GoplsHandler(lsp.BaseHandler):
         file_name = lsp.DocumentURI(params["uri"]).to_path()
 
         try:
-            document = Document.from_file(file_name)
+            document = BufferedDocument.from_file(file_name)
         except ViewNotFoundError:
             # ignore unbuffered document
             pass
