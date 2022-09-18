@@ -83,7 +83,7 @@ class TextChangeItem:
         return cls(region, new_text, move)
 
 
-TEXT_CHANGE_PROCESS = threading.Event()
+TEXT_CHANGE_PROCESS = threading.Lock()
 TEXT_CHANGE_SYNC = threading.Event()
 
 
@@ -769,27 +769,24 @@ class Workspace:
         active_document = self.active_document
 
         for change in document_changes:
-            if TEXT_CHANGE_PROCESS.is_set():
+            if TEXT_CHANGE_PROCESS.locked():
                 LOGGER.debug("waiting change process")
                 TEXT_CHANGE_SYNC.wait()
                 LOGGER.debug("change process done")
 
-            TEXT_CHANGE_PROCESS.set()
             TEXT_CHANGE_SYNC.clear()
-
             file_name = lsp.DocumentURI(change["textDocument"]["uri"]).to_path()
 
-            try:
-                document = self.get_document(file_name)
-                document.apply_text_changes(change["edits"])
-                document.save()
+            with TEXT_CHANGE_PROCESS:
+                try:
+                    document = self.get_document(file_name)
+                    document.apply_text_changes(change["edits"])
+                    document.save()
 
-            except DocumentNotFound:
-                # modify file without buffer
-                document = UnbufferedDocument(file_name)
-                document.apply_text_changes(change["edits"])
-            finally:
-                TEXT_CHANGE_PROCESS.clear()
+                except DocumentNotFound:
+                    # modify file without buffer
+                    document = UnbufferedDocument(file_name)
+                    document.apply_text_changes(change["edits"])
 
         # focus active view
         self.focus_document(active_document)
