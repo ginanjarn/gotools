@@ -31,6 +31,27 @@ STREAM_HANDLER.setFormatter(logging.Formatter(LOG_TEMPLATE))
 LOGGER.addHandler(STREAM_HANDLER)
 
 
+class StatusMessage:
+    """handle status message"""
+
+    status_key = "gotools_status"
+
+    def set_status(self, message: str):
+        view: sublime.View = sublime.active_window().active_view()
+        view.set_status(self.status_key, f"🔄 {message}")
+
+    def erase_status(self):
+        view: sublime.View = sublime.active_window().active_view()
+        view.erase_status(self.status_key)
+
+    def show_message(self, message: str):
+        window: sublime.Window = sublime.active_window()
+        window.status_message(message)
+
+
+STATUS_MESSAGE: StatusMessage = None
+
+
 class TextChangeItem:
     """Text change item"""
 
@@ -839,7 +860,22 @@ class GoplsHandler(lsp.BaseHandler):
         return ""
 
     def handle_s_progress(self, params: dict) -> None:
-        pass
+        LOGGER.debug(f"handle_s_progress: {params}")
+        value = params.get("value")
+        if not value:
+            return
+
+        kind = value["kind"]
+        message = value["message"]
+        title = value.get("title")
+
+        if kind == "begin":
+            message = f"{title}: {message}"
+            STATUS_MESSAGE.set_status(message)
+
+        elif kind == "end":
+            STATUS_MESSAGE.erase_status()
+            STATUS_MESSAGE.show_message(message)
 
     def handle_textdocument_publishdiagnostics(self, params: dict) -> None:
         LOGGER.debug(f"handle_textdocument_publishdiagnostics: {params}")
@@ -931,9 +967,11 @@ SESSION_MANAGER: SessionManager = None
 
 
 def main():
+    global STATUS_MESSAGE
     global GOPLS_CLIENT
     global SESSION_MANAGER
 
+    STATUS_MESSAGE = StatusMessage()
     transport = lsp.StandardIO("gopls", ["-vv"])
     handler = GoplsHandler()
     GOPLS_CLIENT = lsp.LSPClient(transport, handler)
