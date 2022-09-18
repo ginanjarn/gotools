@@ -1,5 +1,6 @@
 """gotools main"""
 
+import itertools
 import logging
 import os
 import re
@@ -537,6 +538,87 @@ class DiagnosticManager:
         self.show_output_panel()
 
 
+class FileWatchReport:
+    def __init__(
+        self,
+        created: List[str] = None,
+        changed: List[str] = None,
+        deleted: List[str] = None,
+    ):
+        self.created = created or []
+        self.changed = changed or []
+        self.deleted = deleted or []
+
+    def add_created(self, file_name):
+        self.created.append(file_name)
+
+    def add_changed(self, file_name):
+        self.changed.append(file_name)
+
+    def add_deleted(self, file_name):
+        self.deleted.append(file_name)
+
+    def __repr__(self):
+        return (
+            "FileWatchReport("
+            f"created={self.created}, "
+            f"changed={self.changed}, "
+            f"deleted={self.deleted})"
+        )
+
+
+class FileWatcher:
+    def __init__(self, root_path: str, pattern: str = "*"):
+        self.root_path = root_path
+        self.pattern = pattern
+
+        self.cached_paths = {}
+
+    def set_pattern(self, pattern: str):
+        self.pattern = pattern
+
+    def _watch(self):
+        report = FileWatchReport()
+
+        def add_created(file_name, modify_time):
+            self.cached_paths[file_name] = modify_time
+            report.add_created(file_name)
+
+        def add_changed(file_name, modify_time):
+            self.cached_paths[file_name] = modify_time
+            report.add_changed(file_name)
+
+        def add_deleted(file_name):
+            del self.cached_paths[file_name]
+            report.add_deleted(file_name)
+
+        found_paths = set()
+        for path in Path(self.root_path).glob(self.pattern):
+
+            file_name = str(path)
+            modify_time = path.stat().st_mtime
+            found_paths.add(file_name)
+
+            # file modified
+            if file_name in self.cached_paths:
+                if modify_time > self.cached_paths[file_name]:
+                    add_changed(file_name, modify_time)
+
+            # file created
+            else:
+                add_created(file_name, modify_time)
+
+        # file removed
+        for file_name in self.cached_paths.copy():
+            if file_name not in found_paths:
+                add_deleted(file_name)
+
+        return report
+
+    def watch(self) -> FileWatchReport:
+        return self._watch()
+
+
 GOPLS_CLIENT: lsp.LSPClient = None
 
 
@@ -549,12 +631,16 @@ class Workspace:
         self.active_document = active_document
         self.is_initialized = False
 
+        self.file_watcher = FileWatcher(root_path, "**/*.go")
         self.diagnostic_manager = DiagnosticManager()
 
     def initialize(self):
         GOPLS_CLIENT.initialize(self.root_path)
 
     def initialized(self):
+        # watch files in project
+        self.file_watcher.watch()
+
         GOPLS_CLIENT.initialized()
         self.is_initialized = True
 
@@ -562,7 +648,7 @@ class Workspace:
         try:
             self.active_document = self.documents[file_name]
         except KeyError:
-            self.active_document = BufferedDocument(file_name)
+            self.open_file(file_name)
 
     def get_document(self, file_name: str) -> BufferedDocument:
         if document := self.documents.get(file_name):
@@ -577,6 +663,8 @@ class Workspace:
         document = BufferedDocument(file_name)
         self.documents[file_name] = document
         GOPLS_CLIENT.textDocument_didOpen(file_name, document.source(), 0)
+
+        self.active_document = self.documents[file_name]
 
     def reload_file(self, file_name: str):
         document = self.documents[file_name]
@@ -596,13 +684,17 @@ class Workspace:
         self.window().focus_view(document.view)
 
     def watch_file_changes(self):
-        def build_item(change: file_watcher.ChangeItem):
+        def buld_item(path, type_):
             return {
-                "uri": lsp.DocumentURI.from_path(change.file_name),
-                "type": change.change_type,
+                "uri": lsp.DocumentURI.from_path(path),
+                "type": type_,
             }
 
-        changes = [build_item(change) for change in self.watcher.poll()]
+        report = self.file_watcher.watch()
+        created = [buld_item(path, 1) for path in report.created]
+        changed = [buld_item(path, 2) for path in report.changed]
+        deleted = [buld_item(path, 3) for path in report.deleted]
+        changes = list(itertools.chain(created, changed, deleted))
 
         if changes:
             try:
@@ -937,25 +1029,14 @@ class EventListener(sublime_plugin.EventListener):
         if not SESSION_MANAGER.is_running:
             return
 
-        WORKSPACE.open_file(view.file_name())
+        WORKSPACE.watch_file_changes()
+        WORKSPACE.set_active_document(view.file_name())
 
     def on_load(self, view: sublime.View):
-        if not valid_source(view):
-            return
-
-        if not SESSION_MANAGER.is_running:
-            return
-
-        WORKSPACE.reload_file(view.file_name())
+        pass
 
     def on_reload(self, view: sublime.View):
-        if not valid_source(view):
-            return
-
-        if not SESSION_MANAGER.is_running:
-            return
-
-        WORKSPACE.reload_file(view.file_name())
+        pass
 
     def on_pre_save(self, view: sublime.View):
         pass
@@ -968,6 +1049,7 @@ class EventListener(sublime_plugin.EventListener):
             return
 
         WORKSPACE.save_file(view.file_name())
+        WORKSPACE.watch_file_changes()
 
     def on_pre_close(self, view: sublime.View):
         if not valid_source(view):
