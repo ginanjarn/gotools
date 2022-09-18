@@ -842,7 +842,7 @@ class GoplsHandler(lsp.BaseHandler):
         WORKSPACE.open_file(WORKSPACE.active_document.file_name())
 
     def handle_window_logmessage(self, params: dict) -> None:
-        pass
+        print(params["message"])
 
     def handle_window_showmessage(self, params: dict) -> None:
         pass
