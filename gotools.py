@@ -261,6 +261,11 @@ class BufferedDocument:
         self.version = 0
         self.diagnostics = {}
 
+    @classmethod
+    def from_active_view(cls):
+        file_name = sublime.active_window().active_view().file_name()
+        return cls(file_name)
+
     def increment_version(self):
         self.version += 1
 
@@ -552,7 +557,7 @@ class Workspace:
     def __init__(self, root_path: str, active_document: BufferedDocument = None):
         self.documents: Dict[str, BufferedDocument] = {}
         self.root_path = root_path
-        self.active_document = active_document
+        self.active_document = active_document or BufferedDocument.from_active_view()
         self.is_initialized = False
 
         self.file_watcher = FileWatcher(root_path, "**/*.go")
@@ -840,25 +845,29 @@ class GoplsHandler(lsp.BaseHandler):
 class SessionManager:
     def __init__(self):
         self.is_running = False
-        self.workspace: Workspace = None
+        self.lock = threading.Lock()
+
+    def is_ready(self) -> bool:
+        with self.lock:
+            return self.is_running and WORKSPACE.is_initialized
 
     def start(self, root_path: str, working_file_name: str):
+        if self.lock.locked():
+            return
+
         global WORKSPACE
-
-        GOPLS_CLIENT.run_server()
-        self.is_running = True
-        active_document = BufferedDocument(working_file_name)
-        self.workspace = Workspace(root_path, active_document)
-
-        WORKSPACE = self.workspace
-        self.workspace.initialize()
+        with self.lock:
+            GOPLS_CLIENT.run_server()
+            self.is_running = True
+            WORKSPACE = Workspace(root_path)
+            WORKSPACE.initialize()
 
     def exit(self):
         global WORKSPACE
-
-        GOPLS_CLIENT.exit()
-        self.is_running = False
-        WORKSPACE = None
+        with self.lock:
+            GOPLS_CLIENT.exit()
+            self.is_running = False
+            WORKSPACE = None
 
 
 SESSION_MANAGER: SessionManager = None
@@ -921,7 +930,7 @@ class EventListener(sublime_plugin.EventListener):
         if not (valid_source(view) and valid_context(view, point)):
             return None
 
-        if WORKSPACE:
+        if SESSION_MANAGER.is_ready():
             if completion := WORKSPACE.active_document.get_cached_completion():
                 return sublime.CompletionList(
                     completion, flags=sublime.INHIBIT_EXPLICIT_COMPLETIONS
@@ -962,7 +971,7 @@ class EventListener(sublime_plugin.EventListener):
         if not valid_source(view):
             return
 
-        if not SESSION_MANAGER.is_running:
+        if not SESSION_MANAGER.is_ready():
             return
 
         WORKSPACE.watch_file_changes()
@@ -981,7 +990,7 @@ class EventListener(sublime_plugin.EventListener):
         if not valid_source(view):
             return
 
-        if not SESSION_MANAGER.is_running:
+        if not SESSION_MANAGER.is_ready():
             return
 
         WORKSPACE.save_file(view.file_name())
@@ -991,7 +1000,7 @@ class EventListener(sublime_plugin.EventListener):
         if not valid_source(view):
             return
 
-        if not SESSION_MANAGER.is_running:
+        if not SESSION_MANAGER.is_ready():
             return
 
         WORKSPACE.close_file(view.file_name())
@@ -1009,7 +1018,7 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
         if not valid_source(view):
             return
 
-        if not SESSION_MANAGER.is_running:
+        if not SESSION_MANAGER.is_ready():
             return
 
         change_items = [self.build_items(view, change) for change in changes]
@@ -1040,7 +1049,7 @@ class GotoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
         if not valid_source(self.view):
             return
 
-        if not SESSION_MANAGER.is_running:
+        if not SESSION_MANAGER.is_ready():
             return
 
         GOPLS_CLIENT.textDocument_formatting(self.view.file_name())
@@ -1053,7 +1062,7 @@ class GotoolsCodeActionCommand(sublime_plugin.TextCommand):
         if not valid_source(self.view):
             return
 
-        if not SESSION_MANAGER.is_running:
+        if not SESSION_MANAGER.is_ready():
             return
 
         selection = self.view.sel()[0]
@@ -1079,7 +1088,7 @@ class GotoolsRenameCommand(sublime_plugin.TextCommand):
         if not valid_source(self.view):
             return
 
-        if not SESSION_MANAGER.is_running:
+        if not SESSION_MANAGER.is_ready():
             return
 
         file_name = self.view.file_name()
@@ -1095,7 +1104,7 @@ class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
         if not valid_source(self.view):
             return
 
-        if not SESSION_MANAGER.is_running:
+        if not SESSION_MANAGER.is_ready():
             return
 
         file_name = self.view.file_name()
