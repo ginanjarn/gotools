@@ -16,11 +16,8 @@ import sublime
 import sublime_plugin
 from .third_party import mistune
 
-from .api import file_watcher
 from .api import lsp
 from .api import tools
-
-# from api import lsp  # delete later!!! for typing only ------------------------
 
 
 LOGGER = logging.getLogger(__name__)
@@ -244,101 +241,6 @@ class CompletionItem(sublime.CompletionItem):
         )
 
 
-# class DiagnosticManager:
-#     """manage project diagnostic"""
-
-#     def __init__(self):
-#         self.diagnostic_map = {}
-
-#     def set(self, view: sublime.View, diagnostics: List[dict], /):
-#         """set diagnostic"""
-#         file_name = view.file_name()
-#         self.diagnostic_map[file_name] = diagnostics
-
-#         # highlight text
-#         self.higlight_text(view, diagnostics)
-#         # show output panel
-#         self.create_output_panel()
-#         self.show_output_panel()
-
-#     def higlight_text(self, view: sublime.View, diagnostics: List[dict]):
-#         region_key = "gotools_errors"
-
-#         # erase current regions
-#         view.erase_regions(region_key)
-
-#         def get_region(diagnostic) -> sublime.Region:
-#             start = diagnostic["range"]["start"]
-#             end = diagnostic["range"]["end"]
-#             start_point = view.text_point_utf16(start["line"], start["character"])
-#             end_point = view.text_point_utf16(end["line"], end["character"])
-#             if start_point == end_point:
-#                 return view.line(start_point)
-#             return sublime.Region(start_point, end_point)
-
-#         regions = [get_region(diagnostic) for diagnostic in diagnostics]
-#         view.add_regions(
-#             key=region_key,
-#             regions=regions,
-#             scope="Comment",
-#             icon="dot",
-#             flags=sublime.DRAW_NO_OUTLINE
-#             | sublime.DRAW_NO_FILL
-#             | sublime.DRAW_SQUIGGLY_UNDERLINE,
-#         )
-
-#     def create_output_panel(self) -> None:
-#         """create output panel"""
-
-#         message_buffer = StringIO()
-
-#         def build_message(file_name: str, diagnostics: List[dict]):
-#             for diagnostic in diagnostics:
-#                 short_name = os.path.basename(file_name)
-#                 row = diagnostic["range"]["start"]["line"]
-#                 col = diagnostic["range"]["start"]["character"]
-#                 message = diagnostic["message"]
-#                 source = diagnostic.get("source", "")
-
-#                 # natural line index start with 1
-#                 row += 1
-
-#                 message_buffer.write(
-#                     f"{short_name}:{row}:{col}: {message} ({source})\n"
-#                 )
-
-#         for file_name, diagnostics in self.diagnostic_map.items():
-#             build_message(file_name, diagnostics)
-
-#         panel_name = f"gotools_panel"
-#         panel = sublime.active_window().create_output_panel(panel_name)
-#         panel.set_read_only(False)
-#         panel.run_command(
-#             "append", {"characters": message_buffer.getvalue()},
-#         )
-
-#     def show_output_panel(self) -> None:
-#         """show output panel"""
-
-#         panel_name = f"gotools_panel"
-#         sublime.active_window().run_command(
-#             "show_panel", {"panel": f"output.{panel_name}"}
-#         )
-
-#     def get_diagnostics(self, file_name: str) -> List[dict]:
-#         """get diagnostics for document"""
-#         return self.diagnostic_map.get(file_name, [])
-
-#     def destroy_output_panel(self, file_name: str):
-#         """destroy output panel"""
-
-#         panel_name = f"gotools_panel:{file_name}"
-#         sublime.active_window().destroy_output_panel(panel_name)
-
-
-# DIAGNOSTIC_MANAGER: DiagnosticManager = None
-
-
 class ViewNotFoundError(ValueError):
     """view not found in buffer"""
 
@@ -426,8 +328,6 @@ class BufferedDocument:
             yield line
 
     def show_documentation(self, documentation: dict):
-        LOGGER.debug(f"show_documentation for {documentation}")
-
         def show_popup(text, location):
             self.view.show_popup(
                 content=text,
@@ -466,18 +366,21 @@ class BufferedDocument:
         self.view.run_command("gotools_apply_text_changes", {"text_changes": changes})
 
     def get_get_highligth_regions(self) -> List[sublime.Region]:
-        view = self.view
 
         if not self.diagnostics:
             return []
 
         def get_region(diagnostic) -> sublime.Region:
+            view = self.view
+
             start = diagnostic["range"]["start"]
             end = diagnostic["range"]["end"]
             start_point = view.text_point_utf16(start["line"], start["character"])
             end_point = view.text_point_utf16(end["line"], end["character"])
+
             if start_point == end_point:
                 return view.line(start_point)
+
             return sublime.Region(start_point, end_point)
 
         return [get_region(diagnostic) for diagnostic in self.diagnostics]
@@ -687,10 +590,6 @@ class Workspace:
 
         self.active_document = self.documents[file_name]
 
-    def reload_file(self, file_name: str):
-        document = self.documents[file_name]
-        GOPLS_CLIENT.textDocument_didOpen(file_name, document.source(), 0)
-
     def close_file(self, file_name: str):
         del self.documents[file_name]
         GOPLS_CLIENT.textDocument_didClose(file_name)
@@ -820,12 +719,13 @@ class Workspace:
             return f"{file_name}:{row}:{col}"
 
         locations = [build_location(definition) for definition in definitions]
-        LOGGER.debug(locations)
 
         def select_location(index=-1):
-            if index < 0:
-                return
-            self.window().open_file(locations[index], flags=sublime.ENCODED_POSITION)
+            # selected index start from zero
+            if index >= 0:
+                self.window().open_file(
+                    locations[index], flags=sublime.ENCODED_POSITION
+                )
 
         self.window().show_quick_panel(
             locations, on_select=select_location, placeholder="select location"
@@ -838,7 +738,7 @@ WORKSPACE: Workspace = None
 class GoplsHandler(lsp.BaseHandler):
     def handle_initialize(self, params: dict) -> None:
         # TODO: implement
-        GOPLS_CLIENT.initialized()
+        WORKSPACE.initialized()
         WORKSPACE.open_file(WORKSPACE.active_document.file_name())
 
     def handle_window_logmessage(self, params: dict) -> None:
@@ -857,7 +757,6 @@ class GoplsHandler(lsp.BaseHandler):
         return ""
 
     def handle_s_progress(self, params: dict) -> None:
-        LOGGER.debug(f"handle_s_progress: {params}")
         value = params.get("value")
         if not value:
             return
@@ -875,7 +774,6 @@ class GoplsHandler(lsp.BaseHandler):
             STATUS_MESSAGE.show_message(message)
 
     def handle_textdocument_publishdiagnostics(self, params: dict) -> None:
-        LOGGER.debug(f"handle_textdocument_publishdiagnostics: {params}")
         WORKSPACE.apply_diagnostics(params)
 
     def handle_textdocument_hover(self, params: dict) -> None:
@@ -956,8 +854,11 @@ class SessionManager:
         self.workspace.initialize()
 
     def exit(self):
+        global WORKSPACE
+
         GOPLS_CLIENT.exit()
         self.is_running = False
+        WORKSPACE = None
 
 
 SESSION_MANAGER: SessionManager = None
@@ -1105,7 +1006,10 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
         file_name = buffer.file_name()
         view = buffer.primary_view()
 
-        if not (valid_source(view) and SESSION_MANAGER.is_running):
+        if not valid_source(view):
+            return
+
+        if not SESSION_MANAGER.is_running:
             return
 
         change_items = [self.build_items(view, change) for change in changes]

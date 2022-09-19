@@ -28,16 +28,8 @@ class ContentIncomplete(ValueError):
     """expected size less than defined"""
 
 
-class ContentOverflow(ValueError):
-    """expected size greater than defined"""
-
-
 class ServerOffline(Exception):
     """server offline"""
-
-
-class NotInitialized(Exception):
-    """server not initialized"""
 
 
 class DocumentURI(str):
@@ -107,12 +99,9 @@ class RPCMessage(dict):
 
     @classmethod
     def response(cls, id_, result=None, error=None):
-        c = cls({"id": id_})
-        if result is not None:
-            c["result"] = result
-        if error is not None:
-            c["error"] = error
-        return c
+        if error:
+            return cls({"id": id_, "error": error})
+        return cls({"id": id_, "result": result})
 
 
 class Stream:
@@ -202,7 +191,7 @@ class AbstractTransport(ABC):
     """abstract transport"""
 
     @abstractmethod
-    def run_server(self, command_list: List[str]):
+    def run_server(self):
         """run server"""
 
     @abstractmethod
@@ -271,8 +260,6 @@ class Commands:
         client_version: str = "1.0",
     ):
         """initialize server"""
-
-        LOGGER.info("initialize")
 
         params = {
             "processId": 2372,
@@ -637,17 +624,12 @@ class Commands:
                 }
             ],
         }
-
         self.send_request("initialize", params)
 
     def initialized(self):
-        LOGGER.info("initialized")
-        params = {}
-        self.send_notification("initialized", params)
+        self.send_notification("initialized", {})
 
     def textDocument_didOpen(self, file_name: str, source: str, version: int):
-        LOGGER.info("textDocument_didOpen")
-
         params = {
             "textDocument": {
                 "languageId": "go",
@@ -658,12 +640,7 @@ class Commands:
         }
         self.send_notification("textDocument/didOpen", params)
 
-    def _hide_completion(self, characters: str):
-        pass
-
     def textDocument_didChange(self, file_name: str, changes: List[dict], version: int):
-        LOGGER.info("textDocument_didChange")
-
         params = {
             "contentChanges": changes,
             "textDocument": {"uri": path_to_uri(file_name), "version": version,},
@@ -671,20 +648,14 @@ class Commands:
         self.send_notification("textDocument/didChange", params)
 
     def textDocument_didClose(self, file_name: str):
-        LOGGER.info("textDocument_didClose")
-
         params = {"textDocument": {"uri": path_to_uri(file_name)}}
         self.send_notification("textDocument/didClose", params)
 
     def textDocument_didSave(self, file_name: str):
-        LOGGER.info("textDocument_didSave")
-
         params = {"textDocument": {"uri": path_to_uri(file_name)}}
         self.send_notification("textDocument/didSave", params)
 
     def textDocument_completion(self, file_name: str, row: int, col: int):
-        LOGGER.info("textDocument_completion")
-
         params = {
             "context": {"triggerKind": 1},  # TODO: adapt KIND
             "position": {"character": col, "line": row},
@@ -693,7 +664,6 @@ class Commands:
         self.send_request("textDocument/completion", params)
 
     def textDocument_hover(self, file_name: str, row: int, col: int):
-        LOGGER.info("textDocument_hover")
         params = {
             "position": {"character": col, "line": row},
             "textDocument": {"uri": path_to_uri(file_name)},
@@ -701,8 +671,6 @@ class Commands:
         self.send_request("textDocument/hover", params)
 
     def textDocument_formatting(self, file_name, tab_size=2):
-        LOGGER.info("textDocument_formatting")
-
         params = {
             "options": {"insertSpaces": True, "tabSize": tab_size},
             "textDocument": {"uri": path_to_uri(file_name)},
@@ -710,20 +678,14 @@ class Commands:
         self.send_request("textDocument/formatting", params)
 
     def textDocument_semanticTokens_full(self, file_name: str):
-        LOGGER.info("textDocument_semanticTokens_full")
-
         params = {"textDocument": {"uri": path_to_uri(file_name)}}
         self.send_request("textDocument/semanticTokens/full", params)
 
     def textDocument_documentLink(self, file_name: str):
-        LOGGER.info("textDocument_documentLink")
-
         params = {"textDocument": {"uri": path_to_uri(file_name)}}
         self.send_request("textDocument/documentLink", params)
 
     def textDocument_documentSymbol(self, file_name: str):
-        LOGGER.info("textDocument_documentSymbol")
-
         params = {"textDocument": {"uri": path_to_uri(file_name)}}
         self.send_request("textDocument/documentSymbol", params)
 
@@ -736,11 +698,7 @@ class Commands:
         end_col: int,
         diagnostics=None,
     ):
-        LOGGER.info("textDocument_codeAction")
-
-        if not diagnostics:
-            diagnostics = []
-
+        diagnostics = diagnostics or []
         params = {
             "context": {"diagnostics": diagnostics},
             "range": {
@@ -757,9 +715,8 @@ class Commands:
     def workspace_didChangeWatchedFiles(self, changes: List[dict]):
         """
         params = {
-                    "changes": [{"uri": DocumentURI.from_path(file_name), "type": 1,}]
-                }
-
+            "changes": [{"uri": DocumentURI.from_path(file_name), "type": 1,}]
+        }
         type: 
             1 -> Created
             2 -> Changed
@@ -769,7 +726,6 @@ class Commands:
         self.send_notification("workspace/didChangeWatchedFiles", params)
 
     def textDocument_prepareRename(self, file_name, row, col):
-
         params = {
             "position": {"character": col, "line": row},
             "textDocument": {"uri": path_to_uri(file_name)},
@@ -777,7 +733,6 @@ class Commands:
         self.send_request("textDocument/prepareRename", params)
 
     def textDocument_rename(self, file_name, row, col, new_name):
-
         params = {
             "newName": new_name,
             "position": {"character": col, "line": row},
@@ -786,7 +741,6 @@ class Commands:
         self.send_request("textDocument/rename", params)
 
     def textDocument_definition(self, file_name, row, col):
-
         params = {
             "position": {"character": col, "line": row},
             "textDocument": {"uri": path_to_uri(file_name)},
@@ -794,7 +748,6 @@ class Commands:
         self.send_request("textDocument/definition", params)
 
     def textDocument_declaration(self, file_name, row, col):
-
         params = {
             "position": {"character": col, "line": row},
             "textDocument": {"uri": path_to_uri(file_name)},
@@ -808,12 +761,13 @@ class Commands:
 class BaseHandler:
     """base handler define rpc flattened command handler
 
-    every command have to implement single param argument
+    every command have to implement single params argument
     with 'handle_*' prefex
 
-      class DummyHandler(BaseHandler):
-          def handle_initialize(self, params):
-              pass
+    >>> class DummyHandler(BaseHandler):
+    ...     def handle_initialize(self, params) -> None:
+    ...         pass
+    ...
     """
 
 
@@ -866,14 +820,14 @@ class LSPClient(Commands):
                     LOGGER.error(err, exc_info=True)
 
     def exec_notification(self, method, message):
-        LOGGER.info(f"exec notification {message}")
+        LOGGER.info(f"Exec Notification: {message}")
         try:
             self.exec_command(method, message)
         except Exception as err:
             LOGGER.error(err, exc_info=True)
 
     def exec_request(self, id_, method, message):
-        LOGGER.info(f"exec request {message}")
+        LOGGER.info(f"Exec Request: {message}")
         result, error = None, None
         try:
             result = self.exec_command(method, message)
@@ -885,7 +839,7 @@ class LSPClient(Commands):
             self.send_response(id_, result=result, error=error)
 
     def exec_response(self, message: RPCMessage):
-        LOGGER.info(f"exec response {message}")
+        LOGGER.info(f"Exec Response: {message}")
         try:
             method = self.request_map.pop(message["id"])
         except KeyError as err:
