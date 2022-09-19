@@ -1054,6 +1054,9 @@ class GotoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
 
         GOPLS_CLIENT.textDocument_formatting(self.view.file_name())
 
+    def is_enabled(self):
+        return SESSION_MANAGER.is_ready() and valid_source(self.view)
+
 
 class GotoolsCodeActionCommand(sublime_plugin.TextCommand):
     """code action command"""
@@ -1080,6 +1083,9 @@ class GotoolsCodeActionCommand(sublime_plugin.TextCommand):
             diagnostics=document.get_diagnostics(),
         )
 
+    def is_enabled(self):
+        return SESSION_MANAGER.is_ready() and valid_source(self.view)
+
 
 class GotoolsRenameCommand(sublime_plugin.TextCommand):
     """code action command"""
@@ -1095,6 +1101,9 @@ class GotoolsRenameCommand(sublime_plugin.TextCommand):
         cursor = self.view.sel()[0].a
         row, col = self.view.rowcol_utf16(cursor)
         GOPLS_CLIENT.textDocument_prepareRename(file_name, row, col)
+
+    def is_enabled(self):
+        return SESSION_MANAGER.is_ready() and valid_source(self.view)
 
 
 class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
@@ -1112,6 +1121,9 @@ class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
         row, col = self.view.rowcol_utf16(cursor)
         GOPLS_CLIENT.textDocument_definition(file_name, row, col)
 
+    def is_enabled(self):
+        return SESSION_MANAGER.is_ready() and valid_source(self.view)
+
 
 class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
     """restart server"""
@@ -1119,6 +1131,9 @@ class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         LOGGER.info("GotoolsRestartServerCommand")
         SESSION_MANAGER.exit()
+
+    def is_enabled(self):
+        return SESSION_MANAGER.is_running
 
 
 class GotoolsInstallToolsCommand(sublime_plugin.TextCommand):
