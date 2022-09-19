@@ -1203,10 +1203,13 @@ class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
 class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
     """restart server"""
 
-    def run(self, edit, location=None):
-        pass
+    def run(self, edit):
+        LOGGER.info("GotoolsRestartServerCommand")
+        SESSION_MANAGER.exit()
 
 
 class GotoolsInstallToolsCommand(sublime_plugin.TextCommand):
-    def run(self, edit, location=None):
-        pass
+    def run(self, edit):
+        LOGGER.info("GotoolsInstallToolsCommand")
+        thread = threading.Thread(target=tools.install_tools)
+        thread.start()
