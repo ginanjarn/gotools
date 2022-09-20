@@ -1056,7 +1056,7 @@ class GotoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
 
         GOPLS_CLIENT.textDocument_formatting(self.view.file_name())
 
-    def is_enabled(self):
+    def is_visible(self):
         return SESSION_MANAGER.is_ready() and valid_source(self.view)
 
 
@@ -1085,7 +1085,7 @@ class GotoolsCodeActionCommand(sublime_plugin.TextCommand):
             diagnostics=document.get_diagnostics(),
         )
 
-    def is_enabled(self):
+    def is_visible(self):
         return SESSION_MANAGER.is_ready() and valid_source(self.view)
 
 
@@ -1104,7 +1104,7 @@ class GotoolsRenameCommand(sublime_plugin.TextCommand):
         row, col = self.view.rowcol_utf16(cursor)
         GOPLS_CLIENT.textDocument_prepareRename(file_name, row, col)
 
-    def is_enabled(self):
+    def is_visible(self):
         return SESSION_MANAGER.is_ready() and valid_source(self.view)
 
 
@@ -1123,7 +1123,7 @@ class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
         row, col = self.view.rowcol_utf16(cursor)
         GOPLS_CLIENT.textDocument_definition(file_name, row, col)
 
-    def is_enabled(self):
+    def is_visible(self):
         return SESSION_MANAGER.is_ready() and valid_source(self.view)
 
 
@@ -1134,7 +1134,7 @@ class GotoolsRestartServerCommand(sublime_plugin.TextCommand):
         LOGGER.info("GotoolsRestartServerCommand")
         SESSION_MANAGER.exit()
 
-    def is_enabled(self):
+    def is_visible(self):
         return SESSION_MANAGER.is_running
 
 
