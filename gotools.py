@@ -933,7 +933,9 @@ class EventListener(sublime_plugin.EventListener):
         if SESSION_MANAGER.is_ready():
             if completion := WORKSPACE.active_document.get_cached_completion():
                 return sublime.CompletionList(
-                    completion, flags=sublime.INHIBIT_EXPLICIT_COMPLETIONS
+                    completion,
+                    flags=sublime.INHIBIT_WORD_COMPLETIONS
+                    | sublime.INHIBIT_EXPLICIT_COMPLETIONS,
                 )
 
         file_name = view.file_name()
