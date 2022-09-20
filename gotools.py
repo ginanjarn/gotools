@@ -10,7 +10,7 @@ import time
 from functools import wraps
 from io import StringIO
 from pathlib import Path
-from typing import List, Iterator
+from typing import List, Iterator, Optional
 
 import sublime
 import sublime_plugin
@@ -342,6 +342,7 @@ class BufferedDocument:
             )
 
         style = """
+        <style>
         body { margin: 0.8em; font-family: BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
         code, .code_block {
             background-color: color(var(--background) alpha(0.8));
@@ -349,9 +350,18 @@ class BufferedDocument:
             border-radius: 0.4em;
         }
         code { padding: 0 0.2em 0 0.2em; }
-        .code_block { padding: 0.4em; }        
+        .code_block { padding: 0.4em; }
         ol, ul { padding-left: 1em; }
+        .footer {
+            padding: 0.4em;
+            background-color: color(var(--background) alpha(0.8));
+        }
+        </style>
         """
+
+        def create_footer(point):
+            href = f'subl:gotools_goto_definition {{"point":{point}}}'
+            return f"<div class='footer'><a href='{href}'>Go to definition</a></div>"
 
         if contents := documentation.get("contents"):
             line = documentation["range"]["start"]["line"]
@@ -359,13 +369,14 @@ class BufferedDocument:
             point = self.view.text_point_utf16(line, character)
             kind = contents.get("kind")
             value = contents["value"]
+            footer = create_footer(point)
 
             value = (
                 mistune.markdown(value, escape=False) if kind == "markdown" else value
             )
             value = "\n".join(self.adapt_minihtml(value))
 
-            show_popup(f"<style>{style}</style>\n{value}", point)
+            show_popup("".join([style, value, footer]), point)
 
     def apply_text_changes(self, changes: List[dict]):
         self.view.run_command("gotools_apply_text_changes", {"text_changes": changes})
@@ -1111,7 +1122,7 @@ class GotoolsRenameCommand(sublime_plugin.TextCommand):
 class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
     """code action command"""
 
-    def run(self, edit: sublime.Edit):
+    def run(self, edit: sublime.Edit, point: Optional[int] = None):
         if not valid_source(self.view):
             return
 
@@ -1119,8 +1130,10 @@ class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
             return
 
         file_name = self.view.file_name()
-        cursor = self.view.sel()[0].a
-        row, col = self.view.rowcol_utf16(cursor)
+        if point is None:
+            point = self.view.sel()[0].a
+
+        row, col = self.view.rowcol_utf16(point)
         GOPLS_CLIENT.textDocument_definition(file_name, row, col)
 
     def is_visible(self):
