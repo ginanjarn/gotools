@@ -427,7 +427,8 @@ class BufferedDocument:
 
 
 class DiagnosticManager:
-    def __init__(self):
+    def __init__(self, window: sublime.Window):
+        self.window = window
         self.diagnostic_map = {}
         self.output_panel_name = "gotools_panel"
 
@@ -457,7 +458,7 @@ class DiagnosticManager:
         for file_name, diagnostics in self.diagnostic_map.items():
             build_message(file_name, diagnostics)
 
-        panel = sublime.active_window().create_output_panel(self.output_panel_name)
+        panel = self.window.create_output_panel(self.output_panel_name)
         panel.set_read_only(False)
         panel.run_command(
             "append", {"characters": message_buffer.getvalue()},
@@ -465,13 +466,13 @@ class DiagnosticManager:
 
     def show_output_panel(self) -> None:
         """show output panel"""
-        sublime.active_window().run_command(
+        self.window.run_command(
             "show_panel", {"panel": f"output.{self.output_panel_name}"}
         )
 
     def destroy_output_panel(self, file_name: str):
         """destroy output panel"""
-        sublime.active_window().destroy_output_panel(self.output_panel_name)
+        self.window.destroy_output_panel(self.output_panel_name)
 
     def update_output_panel(self):
         self.create_output_panel()
@@ -572,7 +573,7 @@ class Workspace:
         self.is_initialized = False
 
         self.file_watcher = FileWatcher(root_path, "**/*.go")
-        self.diagnostic_manager = DiagnosticManager()
+        self.diagnostic_manager = DiagnosticManager(self.window())
 
     def initialize(self):
         GOPLS_CLIENT.initialize(self.root_path)
