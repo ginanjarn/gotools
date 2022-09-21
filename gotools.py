@@ -736,15 +736,27 @@ class Workspace:
 
         locations = [build_location(definition) for definition in definitions]
 
+        current_view = self.active_document.view
+        selected_view = None
+
         def select_location(index=-1):
-            # selected index start from zero
+            nonlocal selected_view
             if index >= 0:
-                self.window().open_file(
-                    locations[index], flags=sublime.ENCODED_POSITION
+                # selected index start from zero
+                selected_view = self.window().open_file(
+                    locations[index],
+                    flags=sublime.ENCODED_POSITION | sublime.TRANSIENT,
                 )
+            else:
+                # cancel index = -1
+                if selected_view.id() != current_view.id():
+                    selected_view.close()
 
         self.window().show_quick_panel(
-            locations, on_select=select_location, placeholder="select location"
+            locations,
+            on_select=select_location,
+            on_highlight=select_location,
+            placeholder="select location",
         )
 
 
