@@ -253,7 +253,7 @@ class BufferedDocument:
     """buffered document handler"""
 
     def __init__(self, file_name: str):
-        self.view = sublime.active_window().find_open_file(file_name)
+        self.view: sublime.View = sublime.active_window().find_open_file(file_name)
         if not self.view:
             raise ViewNotFoundError(f"{repr(file_name)} not found in buffer")
 
@@ -607,8 +607,12 @@ class Workspace:
         self.active_document = self.documents[file_name]
 
     def close_file(self, file_name: str):
-        del self.documents[file_name]
-        GOPLS_CLIENT.textDocument_didClose(file_name)
+        try:
+            del self.documents[file_name]
+            GOPLS_CLIENT.textDocument_didClose(file_name)
+        except KeyError:
+            # document not opened on TRANSIENT mode
+            pass
 
     def save_file(self, file_name: str):
         GOPLS_CLIENT.textDocument_didSave(file_name)
