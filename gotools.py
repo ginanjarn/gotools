@@ -1018,6 +1018,23 @@ class EventListener(sublime_plugin.EventListener):
 
         WORKSPACE.close_file(view.file_name())
 
+    def on_window_command(self, window: sublime.Window, name: str, args: dict):
+        view = window.active_view()
+        if not valid_source(view):
+            return None
+
+        if not SESSION_MANAGER.is_ready():
+            return None
+
+        if name == "goto_definition":
+            if args is None:
+                point = view.sel()[0].a
+            else:
+                xy = (args["event"]["x"], args["event"]["y"])
+                point = view.window_to_text(xy)
+
+            view.run_command("gotools_goto_definition", {"point": point})
+
 
 class TextChangeListener(sublime_plugin.TextChangeListener):
     """listen text change"""
