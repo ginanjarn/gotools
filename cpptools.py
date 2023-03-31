@@ -1,1 +1,666 @@
 """C++ tools for Sublime Text"""
+
+import threading
+from collections import defaultdict
+from dataclasses import dataclass
+from functools import wraps
+from io import StringIO
+from pathlib import Path
+from typing import List, Dict
+
+
+import sublime
+import sublime_plugin
+from sublime import HoverZone
+
+from . import api
+
+# custom kind
+KIND_PATH = (sublime.KIND_ID_VARIABLE, "p", "")
+KIND_VALUE = (sublime.KIND_ID_VARIABLE, "u", "")
+KIND_TEXT = (sublime.KIND_ID_VARIABLE, "t", "")
+COMPLETION_KIND_MAP = defaultdict(
+    lambda _: sublime.KIND_AMBIGUOUS,
+    {
+        1: KIND_TEXT,  # text
+        2: sublime.KIND_FUNCTION,  # method
+        3: sublime.KIND_FUNCTION,  # function
+        4: sublime.KIND_FUNCTION,  # constructor
+        5: sublime.KIND_VARIABLE,  # field
+        6: sublime.KIND_VARIABLE,  # variable
+        7: sublime.KIND_TYPE,  # class
+        8: sublime.KIND_TYPE,  # interface
+        9: sublime.KIND_NAMESPACE,  # module
+        10: sublime.KIND_VARIABLE,  # property
+        11: KIND_VALUE,  # unit
+        12: KIND_VALUE,  # value
+        13: sublime.KIND_NAMESPACE,  # enum
+        14: sublime.KIND_KEYWORD,  # keyword
+        15: sublime.KIND_SNIPPET,  # snippet
+        16: KIND_VALUE,  # color
+        17: KIND_PATH,  # file
+        18: sublime.KIND_NAVIGATION,  # reference
+        19: KIND_PATH,  # folder
+        20: sublime.KIND_VARIABLE,  # enum member
+        21: sublime.KIND_VARIABLE,  # constant
+        22: sublime.KIND_TYPE,  # struct
+        23: sublime.KIND_MARKUP,  # event
+        24: sublime.KIND_MARKUP,  # operator
+        25: sublime.KIND_TYPE,  # type parameter
+    },
+)
+
+
+@dataclass
+class TextChange:
+    region: sublime.Region
+    new_text: str
+    cursor_move: int = 0
+
+    def moved_region(self, move: int) -> sublime.Region:
+        return sublime.Region(self.region.a + move, self.region.b + move)
+
+
+class CpptoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
+    def run(self, edit: sublime.Edit, changes: List[dict]):
+        text_changes = [self.to_text_change(c) for c in changes]
+        self.apply(edit, text_changes)
+
+    def to_text_change(self, change: dict) -> TextChange:
+        start = change["range"]["start"]
+        end = change["range"]["end"]
+
+        start_point = self.view.text_point(start["line"], start["character"])
+        end_point = self.view.text_point(end["line"], end["character"])
+
+        region = sublime.Region(start_point, end_point)
+        new_text = change["newText"]
+        cursor_move = len(new_text) - region.size()
+
+        return TextChange(region, new_text, cursor_move)
+
+    def apply(self, edit: sublime.Edit, text_changes: List[TextChange]):
+        cursor_move = 0
+        for change in text_changes:
+            replaced_region = change.moved_region(cursor_move)
+            self.view.erase(edit, replaced_region)
+            self.view.insert(edit, replaced_region.a, change.new_text)
+            cursor_move += change.cursor_move
+
+
+class BufferedDocument:
+    def __init__(self, view: sublime.View):
+        self.view = view
+        self.version = 0
+        self.text = self._get_text()
+
+        self.file_name = self.view.file_name()
+        self._cached_completion = None
+
+    def _get_text(self):
+        if self.view.is_loading():
+            # read from file
+            return Path(self.file_name).read_text()
+
+        return self.view.substr(sublime.Region(0, self.view.size()))
+
+    def new_version(self) -> int:
+        self.version += 1
+        return self.version
+
+    def document_uri(self) -> api.URI:
+        return api.path_to_uri(self.file_name)
+
+    @property
+    def window(self) -> sublime.Window:
+        return self.view.window()
+
+    def show_popup(self, text: str, row: int, col: int):
+        point = self.view.text_point(row, col)
+        self.view.run_command("markdown_popup", {"text": text, "point": point})
+
+    def show_completion(self, items: List[dict]):
+        def convert_kind(kind_num: int):
+            return COMPLETION_KIND_MAP[kind_num]
+
+        def build_completion(completion: dict):
+            # sublime text has complete the header bracket '<> or ""'
+            # remove it from clangd result
+            text = completion["insertText"].rstrip('>"')
+            annotation = completion["label"].rstrip('>"')
+            kind = convert_kind(completion["kind"])
+
+            return sublime.CompletionItem(
+                trigger=text, completion=text, annotation=annotation, kind=kind
+            )
+
+        self._cached_completion = [build_completion(c) for c in items]
+        self._trigger_completion()
+
+    @property
+    def cached_completion(self):
+        temp = self._cached_completion
+        self._cached_completion = None
+        return temp
+
+    def completion_ready(self) -> bool:
+        return self._cached_completion is not None
+
+    def _trigger_completion(self):
+        print("trigger")
+        self.view.run_command(
+            "auto_complete",
+            {
+                "disable_auto_insert": True,
+                "next_completion_if_showing": True,
+                "auto_complete_commit_on_tab": True,
+            },
+        )
+
+    def hide_completion(self):
+        self.view.run_command("hide_auto_complete")
+
+    def apply_text_changes(self, changes: List[dict]):
+        self.view.run_command("cpptools_apply_text_changes", {"changes": changes})
+
+
+class DiagnosticPanel:
+    OUTPUT_PANEL_NAME = "cpptools_panel"
+
+    def __init__(self, window: sublime.Window, diagnostics_map: Dict[str, List[dict]]):
+        self.window = window
+        self.diagnostics_map = diagnostics_map
+
+    def create_output_panel(self) -> None:
+        """create output panel"""
+
+        message_buffer = StringIO()
+
+        def build_message(file_name: str, diagnostics: Dict[str, List[dict]]):
+            for diagnostic in diagnostics:
+                short_name = Path(file_name).name
+                row = diagnostic["range"]["start"]["line"]
+                col = diagnostic["range"]["start"]["character"]
+                message = diagnostic["message"]
+                source = diagnostic.get("source", "")
+
+                # natural line index start with 1
+                row += 1
+
+                message_buffer.write(
+                    f"{short_name}:{row}:{col}: {message} ({source})\n"
+                )
+
+        for file_name, diagnostics in self.diagnostics_map.items():
+            build_message(file_name, diagnostics)
+
+        print(message_buffer.getvalue())
+        panel = self.window.create_output_panel(self.OUTPUT_PANEL_NAME)
+        panel.set_read_only(False)
+        panel.run_command(
+            "append",
+            {"characters": message_buffer.getvalue()},
+        )
+
+    def show(self) -> None:
+        """show output panel"""
+        self.create_output_panel()
+        self.window.run_command(
+            "show_panel", {"panel": f"output.{self.OUTPUT_PANEL_NAME}"}
+        )
+
+    def destroy(self):
+        """destroy output panel"""
+        self.window.destroy_output_panel(self.OUTPUT_PANEL_NAME)
+
+
+class Client(api.BaseHandler):
+    def __init__(self):
+        self.transport = api.Transport(self)
+        self.active_document: BufferedDocument = None
+        self.working_documents: dict[str, BufferedDocument] = {}
+
+        self._initialized = False
+        self.diagnostics_map = {}
+
+        self.diagnostics_panel = DiagnosticPanel(
+            self.active_window(), self.diagnostics_map
+        )
+
+    initialized_event = threading.Event()
+
+    def wait_initialized(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            Client.initialized_event.wait()
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    def ready(self) -> bool:
+        return self.transport.is_running() and self._initialized
+
+    run_server_lock = threading.Lock()
+
+    def run_server(self):
+        # only one thread can run server
+        with self.run_server_lock:
+            if not self.transport.is_running():
+                self.transport.run_server()
+
+    def exit(self):
+        """exit session"""
+        self._initialized = False
+        self.initialized_event.clear()
+        self.transport.terminate_server()
+
+    def active_window(self) -> sublime.Window:
+        return sublime.active_window()
+
+    def initialize(self, workspace_path: str):
+        self.transport.send_request(
+            "initialize",
+            {
+                "rootPath": workspace_path,
+                "rootUri": api.path_to_uri(workspace_path),
+                "capabilities": {
+                    "textDocument": {
+                        "hover": {
+                            "contentFormat": ["markdown", "plaintext"],
+                        }
+                    }
+                },
+            },
+        )
+
+    def handle_initialize(self, params: dict):
+        if err := params.get("error"):
+            print(err["message"])
+            return
+
+        self.transport.send_notification("initialized", {})
+        self._initialized = True
+        self.initialized_event.set()
+
+    @wait_initialized
+    def textdocument_didopen(self, file_name: str):
+        if file_name in self.working_documents:
+            self.active_document = self.working_documents[file_name]
+            return
+
+        view = self.active_window().find_open_file(file_name)
+        self.working_documents[file_name] = BufferedDocument(view)
+        self.active_document = self.working_documents[file_name]
+
+        self.transport.send_notification(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "languageId": "cpp",
+                    "text": self.active_document.text,
+                    "uri": self.active_document.document_uri(),
+                    "version": self.active_document.version,
+                }
+            },
+        )
+
+    def textdocument_didsave(self, file_name: str):
+        print("didSave")
+        self.transport.send_notification(
+            "textDocument/didSave",
+            {"textDocument": {"uri": api.path_to_uri(file_name)}},
+        )
+
+    def textdocument_didclose(self, file_name: str):
+        self.transport.send_notification(
+            "textDocument/didClose",
+            {"textDocument": {"uri": api.path_to_uri(file_name)}},
+        )
+
+        try:
+            del self.working_documents[file_name]
+        except KeyError:
+            pass
+
+    @wait_initialized
+    def textdocument_didchange(self, file_name: str, changes: List[dict]):
+        # changes=[{"range":{"end":{"character":23,"line":3},"start":{"character":23,"line":3}},"rangeLength":0,"text":"\r\n    "}]
+        document = self.working_documents[file_name]
+        self.transport.send_notification(
+            "textDocument/didChange",
+            {
+                "contentChanges": changes,
+                "textDocument": {
+                    "uri": document.document_uri(),
+                    "version": document.new_version(),
+                },
+            },
+        )
+
+    @wait_initialized
+    def textdocument_hover(self, file_name, row, col):
+        self.transport.send_request(
+            "textDocument/hover",
+            {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": api.path_to_uri(file_name)},
+            },
+        )
+
+    def handle_textdocument_hover(self, params: dict):
+        if err := params.get("error"):
+            print(err["message"])
+
+        elif result := params.get("result"):
+            try:
+                message = result["contents"]["value"]
+                start = result["range"]["start"]
+                row, col = start["line"], start["character"]
+            except Exception:
+                pass
+            else:
+                self.active_document.show_popup(message, row, col)
+
+    @wait_initialized
+    def textdocument_completion(self, file_name, row, col):
+        self.transport.send_request(
+            "textDocument/completion",
+            {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": api.path_to_uri(file_name)},
+            },
+        )
+
+    def handle_textdocument_completion(self, params: dict):
+        if err := params.get("error"):
+            print(err["message"])
+
+        elif result := params.get("result"):
+            try:
+                items = result["items"]
+            except Exception:
+                pass
+            else:
+                self.active_document.show_completion(items)
+
+    def handle_textdocument_publishdiagnostics(self, params: dict):
+        file_name = api.uri_to_path(params["uri"])
+        diagnostics = params["diagnostics"]
+
+        self.diagnostics_map[file_name] = diagnostics
+        self.diagnostics_panel.show()
+
+    @wait_initialized
+    def textdocument_formatting(self):
+        self.transport.send_request(
+            "textDocument/formatting",
+            {
+                "options": {"insertSpaces": True, "tabSize": 2},
+                "textDocument": {"uri": self.active_document.document_uri()},
+            },
+        )
+
+    def handle_textdocument_formatting(self, params: dict):
+        if error := params.get("error"):
+            print(error["message"])
+        elif result := params.get("result"):
+            self.active_document.apply_text_changes(result)
+
+    def textdocument_codeaction(self, start_row, start_col, end_row, end_col):
+        self.transport.send_request(
+            "textDocument/codeAction",
+            {
+                "context": {
+                    "diagnostics": self.diagnostics_map.get(
+                        self.active_document.file_name, []
+                    ),
+                    "triggerKind": 2,
+                },
+                "range": {
+                    "end": {"character": end_col, "line": end_row},
+                    "start": {"character": start_col, "line": start_row},
+                },
+                "textDocument": {"uri": self.active_document.document_uri()},
+            },
+        )
+
+    def handle_textdocument_codeaction(self, params: dict):
+        if error := params.get("error"):
+            print(error["message"])
+        elif result := params.get("result"):
+            self._show_codeaction(result)
+
+    def _show_codeaction(self, actions: List[dict]):
+        def on_select(index):
+            action = actions[index]
+            if edit := action.get("edit"):
+                self._apply_edit(edit)
+            elif command := action.get("command"):
+                self.transport.send_request("workspace/executeCommand", action)
+
+        def get_title(action: dict) -> str:
+            title = action["title"]
+            if kind := action.get("kind"):
+                return f"({kind}){title}"
+            return title
+
+        self.active_window().show_quick_panel(
+            items=[get_title(i) for i in actions],
+            on_select=on_select,
+            flags=sublime.MONOSPACE_FONT,
+            placeholder="Code actions...",
+        )
+
+    def _apply_edit(self, edit: dict):
+        try:
+            for file_uri, changes in edit["changes"].items():
+                document = self.working_documents.get(api.uri_to_path(file_uri))
+                document.apply_text_changes(changes)
+
+        except Exception as err:
+            print(err)
+            raise err
+
+    def handle_workspace_applyedit(self, params: dict) -> dict:
+        print("apply edit:", params)
+
+        try:
+            self._apply_edit(params["edit"])
+        except Exception as err:
+            return {"applied": False}
+        else:
+            return {"applied": True}
+
+    def handle_workspace_executecommand(self, params: dict) -> dict:
+        if error := params.get("error"):
+            print(error["message"])
+        elif result := params.get("result"):
+            print(result)
+
+
+CLIENT: Client = None
+
+
+def main():
+    global CLIENT
+    CLIENT = Client()
+
+
+def plugin_loaded():
+    main()
+
+
+def plugin_unloaded():
+    if CLIENT:
+        CLIENT.exit()
+
+
+def valid_context(view: sublime.View, point: int):
+    return view.match_selector(point, "source.c++")
+
+
+def get_workspace_path(view: sublime.View) -> str:
+    window = view.window()
+    file_name = view.file_name()
+
+    if folders := [
+        folder for folder in window.folders() if file_name.startswith(folder)
+    ]:
+        return max(folders)
+    return str(Path(file_name).parent)
+
+
+class ViewEventListener(sublime_plugin.ViewEventListener):
+    def on_hover(self, point: int, hover_zone: HoverZone):
+        # check point in valid source
+        if not (valid_context(self.view, point) and hover_zone == sublime.HOVER_TEXT):
+            return
+
+        file_name = self.view.file_name()
+        row, col = self.view.rowcol(point)
+
+        threading.Thread(
+            target=self._on_hover, args=(self.view, file_name, row, col)
+        ).start()
+
+    def _on_hover(self, view, file_name, row, col):
+        # check if server available
+        try:
+            if CLIENT.ready():
+                # request on hover
+                CLIENT.textdocument_hover(file_name, row, col)
+            else:
+                # initialize server
+                CLIENT.run_server()
+                CLIENT.initialize(get_workspace_path(view))
+                CLIENT.textdocument_didopen(file_name)
+                CLIENT.textdocument_hover(file_name, row, col)
+
+        except api.ServerNotRunning:
+            pass
+
+    prev_completion_loc = 0
+
+    def on_query_completions(
+        self, prefix: str, locations: List[int]
+    ) -> sublime.CompletionList:
+
+        point = locations[0]
+
+        # check point in valid source
+        if not valid_context(self.view, point):
+            return
+
+        if (document := CLIENT.active_document) and document.completion_ready():
+
+            show = False
+            word = self.view.word(self.prev_completion_loc)
+            if point == self.prev_completion_loc:
+                show = True
+            elif self.view.substr(word).isidentifier() and point in word:
+                show = True
+
+            if show:
+                print("show auto_complete")
+                return sublime.CompletionList(
+                    document.cached_completion, flags=sublime.INHIBIT_WORD_COMPLETIONS
+                )
+
+            print("hide auto_complete")
+            document.hide_completion()
+            return
+
+        self.prev_completion_loc = point
+        file_name = self.view.file_name()
+        row, col = self.view.rowcol(point)
+
+        threading.Thread(
+            target=self._on_query_completions, args=(self.view, file_name, row, col)
+        ).start()
+
+        self.view.run_command("hide_auto_complete")
+
+    def _on_query_completions(self, view, file_name, row, col):
+        # check if server available
+        try:
+            if CLIENT.ready():
+                # request on hover
+                CLIENT.textdocument_completion(file_name, row, col)
+            else:
+                # initialize server
+                CLIENT.run_server()
+                CLIENT.initialize(get_workspace_path(self.view))
+                CLIENT.textdocument_didopen(file_name)
+                CLIENT.textdocument_completion(file_name, row, col)
+
+        except api.ServerNotRunning:
+            pass
+
+    def on_post_save(self):
+        if CLIENT.ready():
+            CLIENT.textdocument_didsave(self.view.file_name())
+
+    def on_close(self):
+        if CLIENT.ready():
+            CLIENT.textdocument_didclose(self.view.file_name())
+
+
+class TextChangeListener(sublime_plugin.TextChangeListener):
+    def on_text_changed(self, changes: List[sublime.TextChange]):
+        view = self.buffer.primary_view()
+        if not valid_context(view, 0):
+            return
+
+        if not CLIENT.ready():
+            return
+
+        CLIENT.textdocument_didchange(
+            self.buffer.file_name(), [self.change_as_rpc(c) for c in changes]
+        )
+
+    @staticmethod
+    def change_as_rpc(change: sublime.TextChange) -> dict:
+        start = change.a
+        end = change.b
+        return {
+            "range": {
+                "end": {"character": end.col, "line": end.row},
+                "start": {"character": start.col, "line": start.row},
+            },
+            "rangeLength": change.len_utf8,
+            "text": change.str,
+        }
+
+
+class CpptoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
+    def run(self, edit: sublime.Edit):
+        file_name = self.view.file_name()
+        if CLIENT.ready():
+            CLIENT.textdocument_didopen(file_name)
+            CLIENT.textdocument_formatting()
+
+    def is_visible(self):
+        return valid_context(self.view, 0)
+
+
+class CpptoolsCodeActionCommand(sublime_plugin.TextCommand):
+    def run(self, edit: sublime.Edit):
+        file_name = self.view.file_name()
+        cursor = self.view.sel()[0]
+        if CLIENT.ready():
+            CLIENT.textdocument_didopen(file_name)
+            start_row, start_col = self.view.rowcol(cursor.a)
+            end_row, end_col = self.view.rowcol(cursor.b)
+            CLIENT.textdocument_codeaction(start_row, start_col, end_row, end_col)
+
+    def is_visible(self):
+        return valid_context(self.view, 0)
+
+
+class CpptoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
+    def run(self, edit: sublime.Edit):
+        pass
+
+    def is_visible(self):
+        # Todo: implement later
+        return False

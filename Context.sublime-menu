@@ -1,0 +1,24 @@
+[	
+	{
+		"caption" : "Format Code",
+		"mnemonic" : "F",
+		"id" : "cpptools",
+		"command" : "cpptools_document_formatting",
+	},
+	{
+		"caption" : "-",
+		"id" : "cpptools",
+	},
+	{
+		"caption" : "Show Definition",
+		"mnemonic" : "D",
+		"id" : "cpptools",
+		"command" : "cpptools_goto_definition",
+	},
+	{
+		"caption" : "Code Action",
+		"mnemonic" : "A",
+		"id" : "cpptools",
+		"command" : "cpptools_code_action",
+	}
+]
