@@ -10,15 +10,31 @@
 		"id" : "cpptools",
 	},
 	{
+		"caption" : "Show Declaration",
+		"mnemonic" : "l",
+		"id" : "cpptools",
+		"command" : "cpptools_goto_declaration",
+	},
+	{
 		"caption" : "Show Definition",
-		"mnemonic" : "D",
+		"mnemonic" : "i",
 		"id" : "cpptools",
 		"command" : "cpptools_goto_definition",
+	},
+	{
+		"caption" : "-",
+		"id" : "cpptools",
 	},
 	{
 		"caption" : "Code Action",
 		"mnemonic" : "A",
 		"id" : "cpptools",
 		"command" : "cpptools_code_action",
+	},
+	{
+		"caption" : "Rename symbol...",
+		"mnemonic" : "R",
+		"id" : "cpptools",
+		"command" : "cpptools_rename",
 	}
 ]

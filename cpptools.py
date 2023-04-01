@@ -88,6 +88,56 @@ class CpptoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
             cursor_move += change.cursor_move
 
 
+class UnbufferedDocument:
+    def __init__(self, file_name: str):
+        self._path = Path(file_name)
+        self.text = self._path.read_text()
+
+    def apply_text_changes(self, changes: List[dict]):
+        [
+            {
+                "newText": "count",
+                "range": {
+                    "end": {"character": 11, "line": 0},
+                    "start": {"character": 4, "line": 0},
+                },
+            }
+        ]
+
+        lines = self.text.split("\n")
+
+        for change in changes:
+            # LOGGER.debug(f"apply change: {change}")
+            try:
+                start = change["range"]["start"]
+                end = change["range"]["end"]
+                new_text = change["newText"]
+
+                start_line, start_character = start["line"], start["character"]
+                end_line, end_character = end["line"], end["character"]
+
+            except KeyError as err:
+                raise Exception(f"invalid params {err}")
+
+            new_lines = []
+            # pre change line
+            new_lines.extend(lines[:start_line])
+            # changed lines
+            prefix = lines[start_line][:start_character]
+            suffix = lines[end_line][end_character:]
+            changed_lines = f"{prefix}{new_text}{suffix}"
+            new_lines.extend(changed_lines.split("\n"))
+            # post change line
+            new_lines.extend(lines[end_line + 1 :])
+            # update
+            lines = new_lines
+
+        self.text = "\n".join(lines)
+
+    def save(self):
+        self._path.write_text(self.text)
+
+
 class BufferedDocument:
     def __init__(self, view: sublime.View):
         self.view = view
@@ -114,6 +164,9 @@ class BufferedDocument:
     @property
     def window(self) -> sublime.Window:
         return self.view.window()
+
+    def save(self):
+        self.view.run_command("save")
 
     def show_popup(self, text: str, row: int, col: int):
         point = self.view.text_point(row, col)
@@ -406,6 +459,7 @@ class Client(api.BaseHandler):
         elif result := params.get("result"):
             self.active_document.apply_text_changes(result)
 
+    @wait_initialized
     def textdocument_codeaction(self, start_row, start_col, end_row, end_col):
         self.transport.send_request(
             "textDocument/codeAction",
@@ -454,8 +508,12 @@ class Client(api.BaseHandler):
     def _apply_edit(self, edit: dict):
         try:
             for file_uri, changes in edit["changes"].items():
-                document = self.working_documents.get(api.uri_to_path(file_uri))
+                file_name = api.uri_to_path(file_uri)
+                document = self.working_documents.get(
+                    file_name, UnbufferedDocument(file_name)
+                )
                 document.apply_text_changes(changes)
+                document.save()
 
         except Exception as err:
             print(err)
@@ -476,6 +534,136 @@ class Client(api.BaseHandler):
             print(error["message"])
         elif result := params.get("result"):
             print(result)
+
+    @wait_initialized
+    def textdocument_declaration(self, row, col):
+        self.transport.send_request(
+            "textDocument/declaration",
+            {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": self.active_document.document_uri()},
+            },
+        )
+
+    @wait_initialized
+    def textdocument_definition(self, row, col):
+        self.transport.send_request(
+            "textDocument/definition",
+            {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": self.active_document.document_uri()},
+            },
+        )
+
+    def _open_locations(self, locations: List[dict]):
+        [
+            {
+                "range": {
+                    "end": {"character": 9, "line": 0},
+                    "start": {"character": 4, "line": 0},
+                },
+                "uri": "file:///C:/Users/ginanjar/cproject/foo/prototype.hpp",
+            }
+        ]
+        current_view = self.active_document.view
+        current_sel = tuple(current_view.sel())
+
+        def build_location(location: dict):
+            file_name = api.uri_to_path(location["uri"])
+            row = location["range"]["start"]["line"]
+            col = location["range"]["start"]["character"]
+            return f"{file_name}:{row+1}:{col+1}"
+
+        locations = [build_location(l) for l in locations]
+
+        def open_location(index):
+            if index < 0:
+                self.active_window().focus_view(current_view)
+                current_view.sel().clear()
+                current_view.sel().add_all(current_sel)
+
+            else:
+                flags = sublime.ENCODED_POSITION
+                self.active_window().open_file(locations[index], flags=flags)
+
+        def preview_location(index):
+            flags = sublime.ENCODED_POSITION | sublime.TRANSIENT
+            self.active_window().open_file(locations[index], flags=flags)
+
+        self.active_window().show_quick_panel(
+            items=locations,
+            on_select=open_location,
+            flags=sublime.MONOSPACE_FONT,
+            on_highlight=preview_location,
+            placeholder="Open location...",
+        )
+
+    def handle_textdocument_declaration(self, params: dict):
+        if error := params.get("error"):
+            print(error["message"])
+        elif result := params.get("result"):
+            self._open_locations(result)
+
+    def handle_textdocument_definition(self, params: dict):
+        if error := params.get("error"):
+            print(error["message"])
+        elif result := params.get("result"):
+            self._open_locations(result)
+
+    @wait_initialized
+    def textdocument_preparerename(self, row, col):
+        self.transport.send_request(
+            "textDocument/prepareRename",
+            {
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": self.active_document.document_uri()},
+            },
+        )
+
+    @wait_initialized
+    def textdocument_rename(self, new_name, row, col):
+        self.transport.send_request(
+            "textDocument/rename",
+            {
+                "newName": new_name,
+                "position": {"character": col, "line": row},
+                "textDocument": {"uri": self.active_document.document_uri()},
+            },
+        )
+
+    def _input_rename(self, symbol_location: dict):
+        {"end": {"character": 13, "line": 10}, "start": {"character": 8, "line": 10}}
+        start = symbol_location["start"]
+        start_point = self.active_document.view.text_point(
+            start["line"], start["character"]
+        )
+        end = symbol_location["end"]
+        end_point = self.active_document.view.text_point(end["line"], end["character"])
+
+        def request_rename(new_name):
+            self.textdocument_rename(new_name, start["line"], start["character"])
+
+        self.active_window().show_input_panel(
+            caption="rename",
+            initial_text=self.active_document.view.substr(
+                sublime.Region(start_point, end_point)
+            ),
+            on_done=request_rename,
+            on_change=None,
+            on_cancel=None,
+        )
+
+    def handle_textdocument_preparerename(self, params: dict):
+        if error := params.get("error"):
+            print(error["message"])
+        elif result := params.get("result"):
+            self._input_rename(result)
+
+    def handle_textdocument_rename(self, params: dict):
+        if error := params.get("error"):
+            print(error["message"])
+        elif result := params.get("result"):
+            self._apply_edit(result)
 
 
 CLIENT: Client = None
@@ -659,8 +847,38 @@ class CpptoolsCodeActionCommand(sublime_plugin.TextCommand):
 
 class CpptoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
     def run(self, edit: sublime.Edit):
-        pass
+        file_name = self.view.file_name()
+        cursor = self.view.sel()[0]
+        if CLIENT.ready():
+            CLIENT.textdocument_didopen(file_name)
+            start_row, start_col = self.view.rowcol(cursor.a)
+            CLIENT.textdocument_definition(start_row, start_col)
 
     def is_visible(self):
-        # Todo: implement later
-        return False
+        return valid_context(self.view, 0)
+
+
+class CpptoolsGotoDeclarationCommand(sublime_plugin.TextCommand):
+    def run(self, edit: sublime.Edit):
+        file_name = self.view.file_name()
+        cursor = self.view.sel()[0]
+        if CLIENT.ready():
+            CLIENT.textdocument_didopen(file_name)
+            start_row, start_col = self.view.rowcol(cursor.a)
+            CLIENT.textdocument_declaration(start_row, start_col)
+
+    def is_visible(self):
+        return valid_context(self.view, 0)
+
+
+class CpptoolsRenameCommand(sublime_plugin.TextCommand):
+    def run(self, edit: sublime.Edit):
+        file_name = self.view.file_name()
+        cursor = self.view.sel()[0]
+        if CLIENT.ready():
+            CLIENT.textdocument_didopen(file_name)
+            start_row, start_col = self.view.rowcol(cursor.a)
+            CLIENT.textdocument_preparerename(start_row, start_col)
+
+    def is_visible(self):
+        return valid_context(self.view, 0)
