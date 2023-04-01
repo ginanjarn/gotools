@@ -486,6 +486,9 @@ class Client(api.BaseHandler):
 
     def _show_codeaction(self, actions: List[dict]):
         def on_select(index):
+            if index < 0:
+                return
+
             action = actions[index]
             if edit := action.get("edit"):
                 self._apply_edit(edit)
