@@ -315,7 +315,7 @@ class Transport:
     def send_request(self, method: str, params: dict):
         with self._request_map_lock:
             # cancel previous request
-            for req_id, meth in self._request_map:
+            for req_id, meth in self._request_map.items():
                 if meth == method:
                     self._canceled_requests.add(req_id)
 
