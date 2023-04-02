@@ -17,7 +17,7 @@ URI = str
 _PathLikeStr = str
 
 LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(logging.DEBUG)
+# LOGGER.setLevel(logging.DEBUG)
 fmt = logging.Formatter("%(levelname)s %(filename)s:%(lineno)d  %(message)s")
 sh = logging.StreamHandler()
 sh.setFormatter(fmt)
@@ -196,7 +196,11 @@ class Transport:
         listen_stderr_thread.start()
 
     def _run_server(self):
-        command = ["clangd", "--log=verbose"]
+        command = ["clangd"]
+
+        if LOGGER.level == logging.DEBUG:
+            command.append("--log=verbose")
+
         self._server_process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,

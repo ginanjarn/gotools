@@ -1,5 +1,6 @@
 """C++ tools for Sublime Text"""
 
+import logging
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
@@ -14,6 +15,13 @@ import sublime_plugin
 from sublime import HoverZone
 
 from . import api
+
+LOGGER = logging.getLogger(__name__)
+# LOGGER.setLevel(logging.DEBUG)
+fmt = logging.Formatter("%(levelname)s %(filename)s:%(lineno)d  %(message)s")
+sh = logging.StreamHandler()
+sh.setFormatter(fmt)
+LOGGER.addHandler(sh)
 
 # custom kind
 KIND_PATH = (sublime.KIND_ID_VARIABLE, "p", "")
@@ -212,7 +220,7 @@ class BufferedDocument:
         return self._cached_completion is not None
 
     def _trigger_completion(self):
-        print("trigger")
+        LOGGER.debug("trigger completion")
         self.view.run_command(
             "auto_complete",
             {
@@ -259,7 +267,6 @@ class DiagnosticPanel:
         for file_name, diagnostics in self.diagnostics_map.items():
             build_message(file_name, diagnostics)
 
-        print(message_buffer.getvalue())
         panel = self.window.create_output_panel(self.OUTPUT_PANEL_NAME)
         panel.set_read_only(False)
         panel.run_command(
@@ -370,7 +377,6 @@ class Client(api.BaseHandler):
         )
 
     def textdocument_didsave(self, file_name: str):
-        print("didSave")
         self.transport.send_notification(
             "textDocument/didSave",
             {"textDocument": {"uri": api.path_to_uri(file_name)}},
@@ -534,12 +540,10 @@ class Client(api.BaseHandler):
                 document.save()
 
         except Exception as err:
-            print(err)
+            LOGGER.exception(err)
             raise err
 
     def handle_workspace_applyedit(self, params: dict) -> dict:
-        print("apply edit:", params)
-
         try:
             self._apply_edit(params["edit"])
         except Exception as err:
@@ -551,7 +555,7 @@ class Client(api.BaseHandler):
         if error := params.get("error"):
             print(error["message"])
         elif result := params.get("result"):
-            print(result)
+            LOGGER.info(result)
 
     @wait_initialized
     def textdocument_declaration(self, row, col):
@@ -767,12 +771,12 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
                 show = True
 
             if show:
-                print("show auto_complete")
+                LOGGER.debug("show auto_complete")
                 return sublime.CompletionList(
                     document.cached_completion, flags=sublime.INHIBIT_WORD_COMPLETIONS
                 )
 
-            print("hide auto_complete")
+            LOGGER.debug("hide auto_complete")
             document.hide_completion()
             return
 
