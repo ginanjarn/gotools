@@ -61,10 +61,16 @@ class TextChange:
         return sublime.Region(self.region.a + move, self.region.b + move)
 
 
+DOCUMENT_CHAGE_EVENT = threading.Event()
+
+
 class CpptoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
     def run(self, edit: sublime.Edit, changes: List[dict]):
         text_changes = [self.to_text_change(c) for c in changes]
-        self.apply(edit, text_changes)
+        try:
+            self.apply(edit, text_changes)
+        finally:
+            DOCUMENT_CHAGE_EVENT.set()
 
     def to_text_change(self, change: dict) -> TextChange:
         start = change["range"]["start"]
@@ -94,6 +100,12 @@ class UnbufferedDocument:
         self.text = self._path.read_text()
 
     def apply_text_changes(self, changes: List[dict]):
+        try:
+            self._apply_text_changes(changes)
+        finally:
+            DOCUMENT_CHAGE_EVENT.set()
+
+    def _apply_text_changes(self, changes: List[dict]):
         [
             {
                 "newText": "count",
@@ -511,11 +523,14 @@ class Client(api.BaseHandler):
     def _apply_edit(self, edit: dict):
         try:
             for file_uri, changes in edit["changes"].items():
+                DOCUMENT_CHAGE_EVENT.clear()
                 file_name = api.uri_to_path(file_uri)
                 document = self.working_documents.get(
                     file_name, UnbufferedDocument(file_name)
                 )
                 document.apply_text_changes(changes)
+                # wait until changes applied
+                DOCUMENT_CHAGE_EVENT.wait()
                 document.save()
 
         except Exception as err:
