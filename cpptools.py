@@ -824,8 +824,10 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
         if not CLIENT.ready():
             return
 
+        file_name = self.buffer.file_name()
+        CLIENT.textdocument_didopen(file_name)
         CLIENT.textdocument_didchange(
-            self.buffer.file_name(), [self.change_as_rpc(c) for c in changes]
+            file_name, [self.change_as_rpc(c) for c in changes]
         )
 
     @staticmethod
