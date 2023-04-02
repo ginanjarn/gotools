@@ -367,45 +367,44 @@ class Client(api.BaseHandler):
         )
 
     def textdocument_didsave(self, file_name: str):
-        self.transport.send_notification(
-            "textDocument/didSave",
-            {"textDocument": {"uri": api.path_to_uri(file_name)}},
-        )
+        if document := self.working_documents.get(file_name):
+            self.transport.send_notification(
+                "textDocument/didSave",
+                {"textDocument": {"uri": document.document_uri()}},
+            )
 
     def textdocument_didclose(self, file_name: str):
-        self.transport.send_notification(
-            "textDocument/didClose",
-            {"textDocument": {"uri": api.path_to_uri(file_name)}},
-        )
-
-        try:
+        if document := self.working_documents.get(file_name):
+            self.transport.send_notification(
+                "textDocument/didClose",
+                {"textDocument": {"uri": document.document_uri()}},
+            )
             del self.working_documents[file_name]
-        except KeyError:
-            pass
 
     @wait_initialized
     def textdocument_didchange(self, file_name: str, changes: List[dict]):
-        document = self.working_documents[file_name]
-        self.transport.send_notification(
-            "textDocument/didChange",
-            {
-                "contentChanges": changes,
-                "textDocument": {
-                    "uri": document.document_uri(),
-                    "version": document.new_version(),
+        if document := self.working_documents.get(file_name):
+            self.transport.send_notification(
+                "textDocument/didChange",
+                {
+                    "contentChanges": changes,
+                    "textDocument": {
+                        "uri": document.document_uri(),
+                        "version": document.new_version(),
+                    },
                 },
-            },
-        )
+            )
 
     @wait_initialized
     def textdocument_hover(self, file_name, row, col):
-        self.transport.send_request(
-            "textDocument/hover",
-            {
-                "position": {"character": col, "line": row},
-                "textDocument": {"uri": api.path_to_uri(file_name)},
-            },
-        )
+        if document := self.working_documents.get(file_name):
+            self.transport.send_request(
+                "textDocument/hover",
+                {
+                    "position": {"character": col, "line": row},
+                    "textDocument": {"uri": document.document_uri()},
+                },
+            )
 
     def handle_textdocument_hover(self, params: dict):
         if err := params.get("error"):
@@ -423,13 +422,14 @@ class Client(api.BaseHandler):
 
     @wait_initialized
     def textdocument_completion(self, file_name, row, col):
-        self.transport.send_request(
-            "textDocument/completion",
-            {
-                "position": {"character": col, "line": row},
-                "textDocument": {"uri": api.path_to_uri(file_name)},
-            },
-        )
+        if document := self.working_documents.get(file_name):
+            self.transport.send_request(
+                "textDocument/completion",
+                {
+                    "position": {"character": col, "line": row},
+                    "textDocument": {"uri": document.document_uri()},
+                },
+            )
 
     def handle_textdocument_completion(self, params: dict):
         if err := params.get("error"):
@@ -451,14 +451,15 @@ class Client(api.BaseHandler):
         self.diagnostics_panel.show()
 
     @wait_initialized
-    def textdocument_formatting(self):
-        self.transport.send_request(
-            "textDocument/formatting",
-            {
-                "options": {"insertSpaces": True, "tabSize": 2},
-                "textDocument": {"uri": self.active_document.document_uri()},
-            },
-        )
+    def textdocument_formatting(self, file_name):
+        if document := self.working_documents.get(file_name):
+            self.transport.send_request(
+                "textDocument/formatting",
+                {
+                    "options": {"insertSpaces": True, "tabSize": 2},
+                    "textDocument": {"uri": document.document_uri()},
+                },
+            )
 
     def handle_textdocument_formatting(self, params: dict):
         if error := params.get("error"):
@@ -467,23 +468,25 @@ class Client(api.BaseHandler):
             self.active_document.apply_text_changes(result)
 
     @wait_initialized
-    def textdocument_codeaction(self, start_row, start_col, end_row, end_col):
-        self.transport.send_request(
-            "textDocument/codeAction",
-            {
-                "context": {
-                    "diagnostics": self.diagnostics_map.get(
-                        self.active_document.file_name, []
-                    ),
-                    "triggerKind": 2,
+    def textdocument_codeaction(
+        self, file_name, start_row, start_col, end_row, end_col
+    ):
+        if document := self.working_documents.get(file_name):
+
+            self.transport.send_request(
+                "textDocument/codeAction",
+                {
+                    "context": {
+                        "diagnostics": self.diagnostics_map.get(file_name, []),
+                        "triggerKind": 2,
+                    },
+                    "range": {
+                        "end": {"character": end_col, "line": end_row},
+                        "start": {"character": start_col, "line": start_row},
+                    },
+                    "textDocument": {"uri": document.document_uri()},
                 },
-                "range": {
-                    "end": {"character": end_col, "line": end_row},
-                    "start": {"character": start_col, "line": start_row},
-                },
-                "textDocument": {"uri": self.active_document.document_uri()},
-            },
-        )
+            )
 
     def handle_textdocument_codeaction(self, params: dict):
         if error := params.get("error"):
@@ -547,24 +550,27 @@ class Client(api.BaseHandler):
             LOGGER.info(result)
 
     @wait_initialized
-    def textdocument_declaration(self, row, col):
-        self.transport.send_request(
-            "textDocument/declaration",
-            {
-                "position": {"character": col, "line": row},
-                "textDocument": {"uri": self.active_document.document_uri()},
-            },
-        )
+    def textdocument_declaration(self, file_name, row, col):
+        if document := self.working_documents.get(file_name):
+            self.transport.send_request(
+                "textDocument/declaration",
+                {
+                    "position": {"character": col, "line": row},
+                    "textDocument": {"uri": document.document_uri()},
+                },
+            )
 
     @wait_initialized
-    def textdocument_definition(self, row, col):
-        self.transport.send_request(
-            "textDocument/definition",
-            {
-                "position": {"character": col, "line": row},
-                "textDocument": {"uri": self.active_document.document_uri()},
-            },
-        )
+    def textdocument_definition(self, file_name, row, col):
+        if document := self.working_documents.get(file_name):
+
+            self.transport.send_request(
+                "textDocument/definition",
+                {
+                    "position": {"character": col, "line": row},
+                    "textDocument": {"uri": document.document_uri()},
+                },
+            )
 
     def _open_locations(self, locations: List[dict]):
         current_view = self.active_document.view
@@ -844,7 +850,7 @@ class CpptoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
         file_name = self.view.file_name()
         if CLIENT.ready():
             CLIENT.textdocument_didopen(file_name)
-            CLIENT.textdocument_formatting()
+            CLIENT.textdocument_formatting(file_name)
 
     def is_visible(self):
         return valid_context(self.view, 0)
@@ -858,7 +864,9 @@ class CpptoolsCodeActionCommand(sublime_plugin.TextCommand):
             CLIENT.textdocument_didopen(file_name)
             start_row, start_col = self.view.rowcol(cursor.a)
             end_row, end_col = self.view.rowcol(cursor.b)
-            CLIENT.textdocument_codeaction(start_row, start_col, end_row, end_col)
+            CLIENT.textdocument_codeaction(
+                file_name, start_row, start_col, end_row, end_col
+            )
 
     def is_visible(self):
         return valid_context(self.view, 0)
@@ -871,7 +879,7 @@ class CpptoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
         if CLIENT.ready():
             CLIENT.textdocument_didopen(file_name)
             start_row, start_col = self.view.rowcol(cursor.a)
-            CLIENT.textdocument_definition(start_row, start_col)
+            CLIENT.textdocument_definition(file_name, start_row, start_col)
 
     def is_visible(self):
         return valid_context(self.view, 0)
@@ -884,7 +892,7 @@ class CpptoolsGotoDeclarationCommand(sublime_plugin.TextCommand):
         if CLIENT.ready():
             CLIENT.textdocument_didopen(file_name)
             start_row, start_col = self.view.rowcol(cursor.a)
-            CLIENT.textdocument_declaration(start_row, start_col)
+            CLIENT.textdocument_declaration(file_name, start_row, start_col)
 
     def is_visible(self):
         return valid_context(self.view, 0)
