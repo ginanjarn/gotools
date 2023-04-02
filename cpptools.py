@@ -803,14 +803,26 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
             pass
 
     def on_activated(self):
+        # check point in valid source
+        if not valid_context(self.view, 0):
+            return
+
         if CLIENT.ready():
             CLIENT.textdocument_didopen(self.view.file_name())
 
     def on_post_save(self):
+        # check point in valid source
+        if not valid_context(self.view, 0):
+            return
+
         if CLIENT.ready():
             CLIENT.textdocument_didsave(self.view.file_name())
 
     def on_close(self):
+        # check point in valid source
+        if not valid_context(self.view, 0):
+            return
+
         if CLIENT.ready():
             CLIENT.textdocument_didclose(self.view.file_name())
 
