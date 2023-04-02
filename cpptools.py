@@ -114,16 +114,6 @@ class UnbufferedDocument:
             DOCUMENT_CHAGE_EVENT.set()
 
     def _apply_text_changes(self, changes: List[dict]):
-        [
-            {
-                "newText": "count",
-                "range": {
-                    "end": {"character": 11, "line": 0},
-                    "start": {"character": 4, "line": 0},
-                },
-            }
-        ]
-
         lines = self.text.split("\n")
 
         for change in changes:
@@ -395,7 +385,6 @@ class Client(api.BaseHandler):
 
     @wait_initialized
     def textdocument_didchange(self, file_name: str, changes: List[dict]):
-        # changes=[{"range":{"end":{"character":23,"line":3},"start":{"character":23,"line":3}},"rangeLength":0,"text":"\r\n    "}]
         document = self.working_documents[file_name]
         self.transport.send_notification(
             "textDocument/didChange",
@@ -578,15 +567,6 @@ class Client(api.BaseHandler):
         )
 
     def _open_locations(self, locations: List[dict]):
-        [
-            {
-                "range": {
-                    "end": {"character": 9, "line": 0},
-                    "start": {"character": 4, "line": 0},
-                },
-                "uri": "file:///C:/Users/ginanjar/cproject/foo/prototype.hpp",
-            }
-        ]
         current_view = self.active_document.view
         current_sel = tuple(current_view.sel())
 
@@ -654,7 +634,6 @@ class Client(api.BaseHandler):
         )
 
     def _input_rename(self, symbol_location: dict):
-        {"end": {"character": 13, "line": 10}, "start": {"character": 8, "line": 10}}
         start = symbol_location["start"]
         start_point = self.active_document.view.text_point(
             start["line"], start["character"]
