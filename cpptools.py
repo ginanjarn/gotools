@@ -226,6 +226,25 @@ class BufferedDocument:
     def apply_text_changes(self, changes: List[dict]):
         self.view.run_command("cpptools_apply_text_changes", {"changes": changes})
 
+    def highlight_text(self, diagnostics: List[dict]):
+        def get_region(diagnostic):
+            start = diagnostic["range"]["start"]
+            end = diagnostic["range"]["end"]
+
+            start_point = self.view.text_point(start["line"], start["character"])
+            end_point = self.view.text_point(end["line"], end["character"])
+            return sublime.Region(start_point, end_point)
+
+        regions = [get_region(d) for d in diagnostics]
+        key = "cpptools_diagnostic"
+
+        self.view.add_regions(
+            key=key,
+            regions=regions,
+            scope="Comment",
+            icon="dot",
+        )
+
 
 class DiagnosticPanel:
     OUTPUT_PANEL_NAME = "cpptools_panel"
@@ -449,6 +468,9 @@ class Client(api.BaseHandler):
 
         self.diagnostics_map[file_name] = diagnostics
         self.diagnostics_panel.show()
+
+        if document := self.working_documents.get(file_name):
+            document.highlight_text(diagnostics)
 
     @wait_initialized
     def textdocument_formatting(self, file_name):
