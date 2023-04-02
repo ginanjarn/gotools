@@ -802,6 +802,10 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
         except api.ServerNotRunning:
             pass
 
+    def on_activated(self):
+        if CLIENT.ready():
+            CLIENT.textdocument_didopen(self.view.file_name())
+
     def on_post_save(self):
         if CLIENT.ready():
             CLIENT.textdocument_didsave(self.view.file_name())
