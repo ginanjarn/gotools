@@ -857,6 +857,14 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
         if CLIENT.ready():
             CLIENT.textdocument_didopen(self.view.file_name(), reload=True)
 
+    def on_revert(self):
+        # check point in valid source
+        if not valid_context(self.view, 0):
+            return
+
+        if CLIENT.ready():
+            CLIENT.textdocument_didopen(self.view.file_name(), reload=True)
+
 
 class TextChangeListener(sublime_plugin.TextChangeListener):
     def on_text_changed(self, changes: List[sublime.TextChange]):
