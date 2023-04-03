@@ -364,8 +364,8 @@ class Client(api.BaseHandler):
         self.initialized_event.set()
 
     @wait_initialized
-    def textdocument_didopen(self, file_name: str):
-        if file_name in self.working_documents:
+    def textdocument_didopen(self, file_name: str, *, reload: bool = False):
+        if (not reload) and file_name in self.working_documents:
             self.active_document = self.working_documents[file_name]
             return
 
@@ -836,6 +836,22 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
 
         if CLIENT.ready():
             CLIENT.textdocument_didclose(self.view.file_name())
+
+    def on_load(self):
+        # check point in valid source
+        if not valid_context(self.view, 0):
+            return
+
+        if CLIENT.ready():
+            CLIENT.textdocument_didopen(self.view.file_name(), reload=True)
+
+    def on_reload(self):
+        # check point in valid source
+        if not valid_context(self.view, 0):
+            return
+
+        if CLIENT.ready():
+            CLIENT.textdocument_didopen(self.view.file_name(), reload=True)
 
 
 class TextChangeListener(sublime_plugin.TextChangeListener):
