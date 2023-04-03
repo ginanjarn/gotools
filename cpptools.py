@@ -392,6 +392,10 @@ class Client(api.BaseHandler):
                 {"textDocument": {"uri": document.document_uri()}},
             )
 
+        else:
+            # untitled document not yet loaded to clangd
+            self.textdocument_didopen(file_name)
+
     def textdocument_didclose(self, file_name: str):
         if document := self.working_documents.get(file_name):
             self.transport.send_notification(
