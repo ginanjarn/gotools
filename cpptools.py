@@ -528,7 +528,7 @@ class Client(api.BaseHandler):
             action = actions[index]
             if edit := action.get("edit"):
                 self._apply_edit(edit)
-            elif command := action.get("command"):
+            elif action.get("command"):
                 self.transport.send_request("workspace/executeCommand", action)
 
         def get_title(action: dict) -> str:
@@ -565,6 +565,7 @@ class Client(api.BaseHandler):
         try:
             self._apply_edit(params["edit"])
         except Exception as err:
+            LOGGER.error(err, exc_info=True)
             return {"applied": False}
         else:
             return {"applied": True}
