@@ -152,7 +152,8 @@ class StreamBuffer:
 
         content = buffer[start:end]
         # compare received content size
-        if (expected_len := len(content)) and expected_len < defined_len:
+        expected_len = len(content)
+        if expected_len < defined_len:
             raise ContentIncomplete(f"want {defined_len}, expected {expected_len}")
 
         # restore unread bytes
