@@ -1,4 +1,4 @@
-"""C++ tools for Sublime Text"""
+"""Golang tools for Sublime Text"""
 
 import logging
 import threading
@@ -72,7 +72,7 @@ class TextChange:
 DOCUMENT_CHAGE_EVENT = threading.Event()
 
 
-class CpptoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
+class GotoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
     def run(self, edit: sublime.Edit, changes: List[dict]):
         text_changes = [self.to_text_change(c) for c in changes]
         try:
@@ -117,7 +117,6 @@ class UnbufferedDocument:
         lines = self.text.split("\n")
 
         for change in changes:
-            # LOGGER.debug(f"apply change: {change}")
             try:
                 start = change["range"]["start"]
                 end = change["range"]["end"]
@@ -187,10 +186,8 @@ class BufferedDocument:
             return COMPLETION_KIND_MAP[kind_num]
 
         def build_completion(completion: dict):
-            # sublime text has complete the header bracket '<> or ""'
-            # remove it from clangd result
-            text = completion["insertText"].rstrip('>"')
-            annotation = completion["label"].rstrip('>"')
+            text = completion["label"]
+            annotation = completion["detail"]
             kind = convert_kind(completion["kind"])
 
             return sublime.CompletionItem(
@@ -224,7 +221,7 @@ class BufferedDocument:
         self.view.run_command("hide_auto_complete")
 
     def apply_text_changes(self, changes: List[dict]):
-        self.view.run_command("cpptools_apply_text_changes", {"changes": changes})
+        self.view.run_command("gotools_apply_text_changes", {"changes": changes})
 
     def highlight_text(self, diagnostics: List[dict]):
         def get_region(diagnostic):
@@ -236,7 +233,7 @@ class BufferedDocument:
             return sublime.Region(start_point, end_point)
 
         regions = [get_region(d) for d in diagnostics]
-        key = "cpptools_diagnostic"
+        key = "gotools_diagnostic"
 
         self.view.add_regions(
             key=key,
@@ -247,7 +244,7 @@ class BufferedDocument:
 
 
 class DiagnosticPanel:
-    OUTPUT_PANEL_NAME = "cpptools_panel"
+    OUTPUT_PANEL_NAME = "gotools_panel"
 
     def __init__(self, window: sublime.Window, diagnostics_map: Dict[str, List[dict]]):
         self.window = window
@@ -363,6 +360,12 @@ class Client(api.BaseHandler):
         self._initialized = True
         self.initialized_event.set()
 
+    def handle_window_logmessage(self, params: dict):
+        print(params["message"])
+
+    def handle_window_showmessage(self, params: dict):
+        sublime.status_message(params["message"])
+
     @wait_initialized
     def textdocument_didopen(self, file_name: str, *, reload: bool = False):
         if (not reload) and file_name in self.working_documents:
@@ -377,7 +380,7 @@ class Client(api.BaseHandler):
             "textDocument/didOpen",
             {
                 "textDocument": {
-                    "languageId": "cpp",
+                    "languageId": "go",
                     "text": self.active_document.text,
                     "uri": self.active_document.document_uri(),
                     "version": self.active_document.version,
@@ -528,38 +531,35 @@ class Client(api.BaseHandler):
             action = actions[index]
             if edit := action.get("edit"):
                 self._apply_edit(edit)
-            elif action.get("command"):
-                self.transport.send_request("workspace/executeCommand", action)
+            elif command := action.get("command"):
+                self.transport.send_request("workspace/executeCommand", command)
 
         def get_title(action: dict) -> str:
             title = action["title"]
             if kind := action.get("kind"):
-                return f"({kind}){title}"
+                return f"({kind}) {title}"
             return title
 
         self.active_window().show_quick_panel(
             items=[get_title(i) for i in actions],
             on_select=on_select,
-            flags=sublime.MONOSPACE_FONT,
+            # flags=sublime.MONOSPACE_FONT,
             placeholder="Code actions...",
         )
 
     def _apply_edit(self, edit: dict):
-        try:
-            for file_uri, changes in edit["changes"].items():
-                DOCUMENT_CHAGE_EVENT.clear()
-                file_name = api.uri_to_path(file_uri)
-                document = self.working_documents.get(
-                    file_name, UnbufferedDocument(file_name)
-                )
-                document.apply_text_changes(changes)
-                # wait until changes applied
-                DOCUMENT_CHAGE_EVENT.wait()
-                document.save()
+        for document_changes in edit["documentChanges"]:
+            file_name = api.uri_to_path(document_changes["textDocument"]["uri"])
+            changes = document_changes["edits"]
 
-        except Exception as err:
-            LOGGER.exception(err)
-            raise err
+            DOCUMENT_CHAGE_EVENT.clear()
+            document = self.working_documents.get(
+                file_name, UnbufferedDocument(file_name)
+            )
+            document.apply_text_changes(changes)
+            # wait until changes applied
+            DOCUMENT_CHAGE_EVENT.wait()
+            document.save()
 
     def handle_workspace_applyedit(self, params: dict) -> dict:
         try:
@@ -576,16 +576,7 @@ class Client(api.BaseHandler):
         elif result := params.get("result"):
             LOGGER.info(result)
 
-    @wait_initialized
-    def textdocument_declaration(self, file_name, row, col):
-        if document := self.working_documents.get(file_name):
-            self.transport.send_request(
-                "textDocument/declaration",
-                {
-                    "position": {"character": col, "line": row},
-                    "textDocument": {"uri": document.document_uri()},
-                },
-            )
+        return None
 
     @wait_initialized
     def textdocument_definition(self, file_name, row, col):
@@ -633,12 +624,6 @@ class Client(api.BaseHandler):
             placeholder="Open location...",
         )
 
-    def handle_textdocument_declaration(self, params: dict):
-        if error := params.get("error"):
-            print(error["message"])
-        elif result := params.get("result"):
-            self._open_locations(result)
-
     def handle_textdocument_definition(self, params: dict):
         if error := params.get("error"):
             print(error["message"])
@@ -667,11 +652,11 @@ class Client(api.BaseHandler):
         )
 
     def _input_rename(self, symbol_location: dict):
-        start = symbol_location["start"]
+        start = symbol_location["range"]["start"]
         start_point = self.active_document.view.text_point(
             start["line"], start["character"]
         )
-        end = symbol_location["end"]
+        end = symbol_location["range"]["end"]
         end_point = self.active_document.view.text_point(end["line"], end["character"])
 
         def request_rename(new_name):
@@ -718,7 +703,7 @@ def plugin_unloaded():
 
 
 def valid_context(view: sublime.View, point: int):
-    return view.match_selector(point, "source.c++")
+    return view.match_selector(point, "source.go")
 
 
 def get_workspace_path(view: sublime.View) -> str:
@@ -896,7 +881,7 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
         }
 
 
-class CpptoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
+class GotoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
     def run(self, edit: sublime.Edit):
         file_name = self.view.file_name()
         if CLIENT.ready():
@@ -907,7 +892,7 @@ class CpptoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
         return valid_context(self.view, 0)
 
 
-class CpptoolsCodeActionCommand(sublime_plugin.TextCommand):
+class GotoolsCodeActionCommand(sublime_plugin.TextCommand):
     def run(self, edit: sublime.Edit):
         file_name = self.view.file_name()
         cursor = self.view.sel()[0]
@@ -923,7 +908,7 @@ class CpptoolsCodeActionCommand(sublime_plugin.TextCommand):
         return valid_context(self.view, 0)
 
 
-class CpptoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
+class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
     def run(self, edit: sublime.Edit):
         file_name = self.view.file_name()
         cursor = self.view.sel()[0]
@@ -936,20 +921,7 @@ class CpptoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
         return valid_context(self.view, 0)
 
 
-class CpptoolsGotoDeclarationCommand(sublime_plugin.TextCommand):
-    def run(self, edit: sublime.Edit):
-        file_name = self.view.file_name()
-        cursor = self.view.sel()[0]
-        if CLIENT.ready():
-            CLIENT.textdocument_didopen(file_name)
-            start_row, start_col = self.view.rowcol(cursor.a)
-            CLIENT.textdocument_declaration(file_name, start_row, start_col)
-
-    def is_visible(self):
-        return valid_context(self.view, 0)
-
-
-class CpptoolsRenameCommand(sublime_plugin.TextCommand):
+class GotoolsRenameCommand(sublime_plugin.TextCommand):
     def run(self, edit: sublime.Edit):
         file_name = self.view.file_name()
         cursor = self.view.sel()[0]

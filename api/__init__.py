@@ -197,10 +197,12 @@ class Transport:
         listen_stderr_thread.start()
 
     def _run_server(self):
-        command = ["clangd"]
+        command = ["gopls"]
 
         if LOGGER.level == logging.DEBUG:
-            command.append("--log=verbose")
+            command.append("-veryverbose")
+
+        LOGGER.debug("exec command: %s",command)
 
         self._server_process = subprocess.Popen(
             command,
@@ -241,7 +243,7 @@ class Transport:
         self._run_server_event.wait()
 
         while line := self._server_process.stderr.readline():
-            print(f"..{line.strip().decode()}")
+            print(f"[gopls]{line.strip().decode()}")
 
     def _listen(self):
         # wait until server ready

@@ -2,39 +2,33 @@
 	{
 		"caption" : "Format Code",
 		"mnemonic" : "F",
-		"id" : "cpptools",
-		"command" : "cpptools_document_formatting",
+		"id" : "gotools",
+		"command" : "gotools_document_formatting",
 	},
 	{
 		"caption" : "-",
-		"id" : "cpptools",
-	},
-	{
-		"caption" : "Show Declaration",
-		"mnemonic" : "l",
-		"id" : "cpptools",
-		"command" : "cpptools_goto_declaration",
+		"id" : "gotools",
 	},
 	{
 		"caption" : "Show Definition",
 		"mnemonic" : "i",
-		"id" : "cpptools",
-		"command" : "cpptools_goto_definition",
+		"id" : "gotools",
+		"command" : "gotools_goto_definition",
 	},
 	{
 		"caption" : "-",
-		"id" : "cpptools",
+		"id" : "gotools",
 	},
 	{
 		"caption" : "Code Action",
 		"mnemonic" : "A",
-		"id" : "cpptools",
-		"command" : "cpptools_code_action",
+		"id" : "gotools",
+		"command" : "gotools_code_action",
 	},
 	{
 		"caption" : "Rename symbol...",
 		"mnemonic" : "R",
-		"id" : "cpptools",
-		"command" : "cpptools_rename",
+		"id" : "gotools",
+		"command" : "gotools_rename",
 	}
 ]
