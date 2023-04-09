@@ -1,2 +1,2 @@
-# CPPTools
-Sublime Text C++ assistant
+# GoTools
+Sublime Text Go assistant
