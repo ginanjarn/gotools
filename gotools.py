@@ -240,6 +240,9 @@ class BufferedDocument:
             regions=regions,
             scope="Comment",
             icon="dot",
+            flags=sublime.DRAW_NO_FILL
+            | sublime.DRAW_NO_OUTLINE
+            | sublime.DRAW_SQUIGGLY_UNDERLINE,
         )
 
 
