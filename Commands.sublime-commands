@@ -1,0 +1,70 @@
+[
+	{
+		"args":
+		{
+			"arguments":
+			[
+				"build",
+				"."
+			]
+		},
+		"caption": "Go: Build Package",
+		"command": "gotools_go"
+	},
+	{
+		"args":
+		{
+			"arguments":
+			[
+				"test",
+				"."
+			]
+		},
+		"caption": "Go: Test Package",
+		"command": "gotools_go"
+	},
+	{
+		"args":
+		{
+			"arguments":
+			[
+				"clean",
+				"."
+			]
+		},
+		"caption": "Go: Clean Build",
+		"command": "gotools_go"
+	},
+	{
+		"args":
+		{
+			"arguments":
+			[
+				"install",
+				"."
+			]
+		},
+		"caption": "Go: Install Package",
+		"command": "gotools_go"
+	},
+	{
+		"caption": "Go: Module Initialize",
+		"command": "gotools_go_mod_init"
+	},
+	{
+		"args":
+		{
+			"arguments":
+			[
+				"mod",
+				"tidy"
+			]
+		},
+		"caption": "Go: Module Tidy",
+		"command": "gotools_go"
+	},
+	{
+		"caption": "Go: Install and Update Tools",
+		"command": "gotools_install_tools"
+	}
+]
