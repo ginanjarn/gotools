@@ -410,6 +410,9 @@ class Client(api.BaseHandler):
                 {"textDocument": {"uri": document.document_uri()}},
             )
             del self.working_documents[file_name]
+            # remove diagnostics
+            del self.diagnostics_map[file_name]
+            self.diagnostics_panel.show()
 
     @wait_initialized
     def textdocument_didchange(self, file_name: str, changes: List[dict]):
