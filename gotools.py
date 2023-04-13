@@ -774,10 +774,10 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
             elif self.view.substr(word).isidentifier() and point in word:
                 show = True
 
-            if show:
+            if (cache := document.cached_completion) and show:
                 LOGGER.debug("show auto_complete")
                 return sublime.CompletionList(
-                    document.cached_completion, flags=sublime.INHIBIT_WORD_COMPLETIONS
+                    cache, flags=sublime.INHIBIT_WORD_COMPLETIONS
                 )
 
             LOGGER.debug("hide auto_complete")
