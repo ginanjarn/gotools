@@ -156,6 +156,12 @@ class BufferedDocument:
         self.file_name = self.view.file_name()
         self._cached_completion = None
 
+        self._add_view_settings()
+
+    def _add_view_settings(self):
+        self.view.settings().set("show_definitions", False)
+        self.view.settings().set("auto_complete_use_index", False)
+
     def _get_text(self):
         if self.view.is_loading():
             # read from file
