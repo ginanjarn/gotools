@@ -620,6 +620,7 @@ class Client(api.BaseHandler):
                 self.active_window().focus_view(current_view)
                 current_view.sel().clear()
                 current_view.sel().add_all(current_sel)
+                current_view.show(current_sel[0])
 
             else:
                 flags = sublime.ENCODED_POSITION
