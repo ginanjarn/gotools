@@ -108,6 +108,10 @@ class ServerNotRunning(Exception):
     """server not running"""
 
 
+class MissingHeader(Exception):
+    """missing header"""
+
+
 class StreamBuffer:
     def __init__(self, buffer: bytes = b""):
         self._buffer = [buffer] if buffer else []
@@ -142,7 +146,7 @@ class StreamBuffer:
             header = buffer[:index]
         else:
             LOGGER.debug("buffer: %s", buffer)
-            raise ValueError("unable get message header")
+            raise MissingHeader("unable get message header")
 
         # get content length from header
         defined_len = self._get_content_len(header)
@@ -202,7 +206,7 @@ class Transport:
         if LOGGER.level == logging.DEBUG:
             command.append("-veryverbose")
 
-        LOGGER.debug("exec command: %s",command)
+        LOGGER.debug("exec command: %s", command)
 
         self._server_process = subprocess.Popen(
             command,
@@ -263,6 +267,13 @@ class Transport:
                 try:
                     content = stream.get()
                 except (ContentIncomplete, EOFError):
+                    break
+
+                # MissingHeader ignored due to 'stdout.read(1024)' may be receive
+                # incomplete header.
+                # e.g.: b"Content" is incomplete, we need to read in next loop
+                except MissingHeader as err:
+                    LOGGER.debug(err)
                     break
 
                 try:
