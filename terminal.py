@@ -1,5 +1,6 @@
 """handle temninal related command"""
 
+import shlex
 import threading
 from pathlib import Path
 from typing import List
@@ -25,18 +26,17 @@ def valid_context(view: sublime.View, point: int):
     return view.match_selector(point, "source.go")
 
 
-class GotoolsGoCommand(sublime_plugin.TextCommand):
-    def run(self, edit: sublime.Edit, arguments: List[str]):
-        thread = threading.Thread(target=self._exec, args=(arguments,))
+class GotoolsShellCommand(sublime_plugin.TextCommand):
+    def run(self, edit: sublime.Edit, command: str):
+        thread = threading.Thread(target=self._exec, args=(command,))
         thread.start()
 
-    def _exec(self, arguments: List[str]):
-        command = ["go"]
-        command.extend(arguments)
+    def _exec(self, command: str):
+        command = shlex.split(command)
         cwd = get_workspace_path(self.view)
 
         ret = terminal.exec_cmd_nobuffer(command, cwd=cwd)
-        print(f"exec terminated with exit code {ret}")
+        print(f"process terminated with exit code {ret}")
 
     def is_visible(self):
         return valid_context(self.view, 0)
@@ -49,7 +49,7 @@ class GotoolsGoModInitCommand(sublime_plugin.TextCommand):
                 print("module name undefined")
                 return
 
-            self.view.run_command("gotools_go", {"arguments": ["mod", "init", name]})
+            self.view.run_command("gotools_shell", {"command": f"go mod init {name}"})
 
         self.view.window().show_input_panel(
             caption="Module name",
