@@ -193,7 +193,7 @@ class BufferedDocument:
 
         def build_completion(completion: dict):
             text = completion["label"]
-            annotation = completion["detail"]
+            annotation = completion.get("detail", "")
             kind = convert_kind(completion["kind"])
 
             return sublime.CompletionItem(
