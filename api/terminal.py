@@ -1,6 +1,7 @@
 """terminal helper"""
 
 import os
+import shlex
 import subprocess
 import threading
 import time
@@ -23,24 +24,13 @@ class ExecResult:
     stderr: str
 
 
-def flatten_command(command: List[str]) -> str:
-    """flatten command arguments"""
-
-    def wrap(arg: str):
-        if (l := len(arg)) and l > 2:
-            return f"{arg}"
-        return arg
-
-    return " ".join([wrap(c) for c in command])
-
-
 def exec_cmd_nobuffer(command: List[str], **kwargs: Any) -> int:
     """exec command and write result to stderr
 
     return exit code
     """
 
-    print(f"execute {flatten_command!r}")
+    print(f"execute {shlex.join(command)!r}")
 
     process = subprocess.Popen(
         command,
