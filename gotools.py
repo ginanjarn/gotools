@@ -151,7 +151,6 @@ class BufferedDocument:
     def __init__(self, view: sublime.View):
         self.view = view
         self.version = 0
-        self.text = self._get_text()
 
         self.file_name = self.view.file_name()
         self._cached_completion = None
@@ -162,7 +161,8 @@ class BufferedDocument:
         self.view.settings().set("show_definitions", False)
         self.view.settings().set("auto_complete_use_index", False)
 
-    def _get_text(self):
+    @property
+    def text(self):
         if self.view.is_loading():
             # read from file
             return Path(self.file_name).read_text()
@@ -868,18 +868,10 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
 
 class TextChangeListener(sublime_plugin.TextChangeListener):
     def on_text_changed(self, changes: List[sublime.TextChange]):
-        view = self.buffer.primary_view()
-        if not valid_context(view, 0):
-            return
-
-        if not CLIENT.ready():
-            return
-
-        file_name = self.buffer.file_name()
-        CLIENT.textdocument_didopen(file_name)
-        CLIENT.textdocument_didchange(
-            file_name, [self.change_as_rpc(c) for c in changes]
-        )
+        if (file_name := self.buffer.file_name()) and CLIENT.ready():
+            CLIENT.textdocument_didchange(
+                file_name, [self.change_as_rpc(c) for c in changes]
+            )
 
     @staticmethod
     def change_as_rpc(change: sublime.TextChange) -> dict:
