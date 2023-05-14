@@ -331,6 +331,9 @@ class Client(api.BaseHandler):
 
     def run_server(self):
         # only one thread can run server
+        if self.run_server_lock.locked():
+            return
+
         with self.run_server_lock:
             if not self.transport.is_running():
                 sublime.status_message("running gopls...")
