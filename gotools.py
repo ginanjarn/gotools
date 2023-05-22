@@ -192,12 +192,13 @@ class BufferedDocument:
             return COMPLETION_KIND_MAP[kind_num]
 
         def build_completion(completion: dict):
-            text = completion["label"]
+            trigger = completion["filterText"]
+            text = completion["textEdit"]["newText"]
             annotation = completion.get("detail", "")
             kind = convert_kind(completion["kind"])
 
-            return sublime.CompletionItem(
-                trigger=text, completion=text, annotation=annotation, kind=kind
+            return sublime.CompletionItem.snippet_completion(
+                trigger=trigger, snippet=text, annotation=annotation, kind=kind
             )
 
         self._cached_completion = [build_completion(c) for c in items]
@@ -358,7 +359,13 @@ class Client(api.BaseHandler):
                     "textDocument": {
                         "hover": {
                             "contentFormat": ["markdown", "plaintext"],
-                        }
+                        },
+                        "completion": {
+                            "completionItem": {
+                                "snippetSupport": True,
+                            },
+                            "insertTextMode": 2,
+                        },
                     }
                 },
             },
