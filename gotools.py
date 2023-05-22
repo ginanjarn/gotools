@@ -805,20 +805,8 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
         self.view.run_command("hide_auto_complete")
 
     def _on_query_completions(self, view, file_name, row, col):
-        # check if server available
-        try:
-            if CLIENT.ready():
-                # request on hover
-                CLIENT.textdocument_completion(file_name, row, col)
-            else:
-                # initialize server
-                CLIENT.run_server()
-                CLIENT.initialize(get_workspace_path(self.view))
-                CLIENT.textdocument_didopen(file_name)
-                CLIENT.textdocument_completion(file_name, row, col)
-
-        except api.ServerNotRunning:
-            pass
+        if CLIENT.ready():
+            CLIENT.textdocument_completion(file_name, row, col)
 
     def on_activated(self):
         # check point in valid source
