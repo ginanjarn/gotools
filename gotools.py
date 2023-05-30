@@ -815,15 +815,29 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
         if CLIENT.ready():
             CLIENT.textdocument_completion(file_name, row, col)
 
-    def on_activated(self):
+    def on_activated_async(self):
         # check point in valid source
         if not valid_context(self.view, 0):
             return
 
+        file_name = self.view.file_name()
         if CLIENT.ready():
-            CLIENT.textdocument_didopen(self.view.file_name())
+            CLIENT.textdocument_didopen(file_name)
 
-    def on_post_save(self):
+        else:
+            if LOGGER.level == logging.DEBUG:
+                return
+
+            try:
+                # initialize server
+                CLIENT.run_server()
+                CLIENT.initialize(get_workspace_path(self.view))
+                CLIENT.textdocument_didopen(file_name)
+
+            except api.ServerNotRunning:
+                pass
+
+    def on_post_save_async(self):
         # check point in valid source
         if not valid_context(self.view, 0):
             return
