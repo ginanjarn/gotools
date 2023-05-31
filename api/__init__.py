@@ -6,6 +6,8 @@ import os
 import re
 import threading
 import subprocess
+from abc import ABC, abstractmethod
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
@@ -108,68 +110,69 @@ class ServerNotRunning(Exception):
     """server not running"""
 
 
-class MissingHeader(Exception):
-    """missing header"""
+class StreamIO(ABC):
+    """stream io"""
+
+    @abstractmethod
+    def read(self) -> bytes:
+        """read stream"""
+
+    @abstractmethod
+    def write(self, data: bytes):
+        """write stream"""
 
 
-class StreamBuffer:
-    def __init__(self, buffer: bytes = b""):
-        self._buffer = [buffer] if buffer else []
-
-    def __repr__(self):
-        return f"StreamBuffer(buffer={self.buffer!r})"
-
-    @property
-    def buffer(self) -> bytes:
-        return b"".join(self._buffer)
-
-    def put(self, b: bytes, /):
-        self._buffer.append(b)
+class StandardIO(StreamIO):
+    def __init__(self, *, reader: BytesIO, writer: BytesIO):
+        self.reader = reader
+        self.writer = writer
 
     @staticmethod
-    def _get_content_len(header: bytes) -> int:
-        pattern = re.compile(rb"Content-Length: (\d+)")
-        if found := pattern.search(header):
-            return int(found.group(1))
+    def _get_content_length(header: bytes):
+        for line in header.splitlines():
+            if found := re.match(rb"Content-Length: (\d+)", line):
+                return int(found.group(1))
+        raise ValueError("unable get 'Content-Length'")
 
-        raise ValueError("unable find Content-Length from header")
+    def read(self):
+        """read stream"""
 
-    def get(self) -> bytes:
-        buffer = self.buffer
-        if not buffer:
-            raise EOFError("buffer empty")
-
-        sep = b"\r\n\r\n"
-        header = b""
-
-        if (index := buffer.find(sep)) and index > -1:
-            header = buffer[:index]
+        # read header
+        temp_header = BytesIO()
+        # process will blocked until line satisfied or end of file
+        while line := self.reader.readline():
+            if line == b"\r\n":
+                break
+            temp_header.write(line)
         else:
-            LOGGER.debug("buffer: %s", buffer)
-            raise MissingHeader("unable get message header")
+            raise EOFError("stdout closed")
 
-        # get content length from header
-        defined_len = self._get_content_len(header)
+        content_length = self._get_content_length(temp_header.getvalue())
 
-        start = len(header) + len(sep)
-        end = start + defined_len
+        temp_content = BytesIO()
+        while True:
+            # process will blocked until expected size satisfied or end of file
+            content = self.reader.read(content_length)
+            if not content:
+                raise EOFError("stdout closed")
+            temp_content.write(content)
 
-        content = buffer[start:end]
-        # compare received content size
-        expected_len = len(content)
-        if expected_len < defined_len:
-            raise ContentIncomplete(f"want {defined_len}, expected {expected_len}")
+            # in case received content is incomplete
+            if len(temp_content.getvalue()) < content_length:
+                continue
 
-        # restore unread bytes
-        self._buffer = [buffer[end:]]
-
-        return content
+            return temp_content.getvalue()
 
     @staticmethod
-    def wraps(data: bytes) -> bytes:
+    def _wraps(data: bytes) -> bytes:
         """wraps data to stream format"""
         header = b"Content-Length: %d" % len(data)
         return b"%s\r\n\r\n%s" % (header, data)
+
+    def write(self, data: bytes):
+        """write stream"""
+        self.writer.write(self._wraps(data))
+        self.writer.flush()
 
 
 class Transport:
@@ -183,6 +186,8 @@ class Transport:
 
         self._run_server_event = threading.Event()
         self._request_map_lock = threading.Lock()
+
+        self._stream: StreamIO = None
 
     def is_running(self) -> bool:
         # if process running, process.poll() return None
@@ -218,10 +223,16 @@ class Transport:
             bufsize=0,
             startupinfo=STARTUPINFO,
         )
+
+        self._stream = StandardIO(
+            reader=self._server_process.stdout, writer=self._server_process.stdin
+        )
+
         self._run_server_event.set()
 
     def terminate_server(self):
         self._run_server_event.clear()
+        self._stream = None
         if self.is_running():
             self._server_process.kill()
 
@@ -234,16 +245,9 @@ class Transport:
         self._run_server_event.wait()
 
         message["jsonrpc"] = "2.0"
-        write_data = StreamBuffer.wraps(message.dumps(as_bytes=True))
+        content = message.dumps(as_bytes=True)
 
-        try:
-            self._server_process.stdin.write(write_data)
-            self._server_process.stdin.flush()
-
-        except Exception as err:
-            if not self.is_running():
-                raise ServerNotRunning("server not running") from err
-            raise err
+        self._stream.write(content)
 
     def _listen_stderr(self):
         # wait until server ready
@@ -259,33 +263,18 @@ class Transport:
         # wait until server ready
         self._run_server_event.wait()
 
-        stream = StreamBuffer()
         while True:
-            if chunk := self._server_process.stdout.read(1024):
-                stream.put(chunk)
-            else:
-                break
 
-            while True:
-                try:
-                    content = stream.get()
-                except (ContentIncomplete, EOFError):
-                    break
+            try:
+                content = self._stream.read()
+                message = RPCMessage.load(content)
+                self.handle_message(message)
 
-                # MissingHeader ignored due to 'stdout.read(1024)' may be receive
-                # incomplete header.
-                # e.g.: b"Content" is incomplete, we need to read in next loop
-                except MissingHeader as err:
-                    LOGGER.debug(err)
-                    break
-
-                try:
-                    message = RPCMessage.load(content)
-                    self.handle_message(message)
-
-                except Exception as err:
-                    LOGGER.error(err, exc_info=True)
-                    self.terminate_server()
+            except Exception as err:
+                LOGGER.debug(content)
+                LOGGER.error(err, exc_info=True)
+                self.terminate_server()
+                return
 
     def handle_message(self, message: RPCMessage):
         id = message.get("id")
