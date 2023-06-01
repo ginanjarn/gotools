@@ -152,7 +152,7 @@ class StandardIO(StreamIO):
         temp_content = BytesIO()
         while True:
             # process will blocked until expected size satisfied or end of file
-            content = self.reader.read(content_length)
+            content = self.reader.read(content_length - len(temp_content.getvalue()))
             if not content:
                 raise EOFError("stdout closed")
             temp_content.write(content)
