@@ -114,8 +114,6 @@ class UnbufferedDocument:
             DOCUMENT_CHAGE_EVENT.set()
 
     def _apply_text_changes(self, changes: List[dict]):
-        lines = self.text.split("\n")
-
         for change in changes:
             try:
                 start = change["range"]["start"]
@@ -126,22 +124,22 @@ class UnbufferedDocument:
                 end_line, end_character = end["line"], end["character"]
 
             except KeyError as err:
-                raise Exception(f"invalid params {err}")
+                raise Exception(f"invalid params {err}") from err
 
-            new_lines = []
+            lines = self.text.splitlines(keepends=True)
+            temp_lines = []
+
             # pre change line
-            new_lines.extend(lines[:start_line])
-            # changed lines
+            temp_lines.extend(lines[:start_line])
+            # line changed
             prefix = lines[start_line][:start_character]
             suffix = lines[end_line][end_character:]
-            changed_lines = f"{prefix}{new_text}{suffix}"
-            new_lines.extend(changed_lines.split("\n"))
+            line = f"{prefix}{new_text}{suffix}"
+            temp_lines.append(line)
             # post change line
-            new_lines.extend(lines[end_line + 1 :])
-            # update
-            lines = new_lines
+            temp_lines.extend(lines[end_line + 1 :])
 
-        self.text = "\n".join(lines)
+            self.text = "".join(temp_lines)
 
     def save(self):
         self._path.write_text(self.text)
