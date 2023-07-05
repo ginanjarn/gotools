@@ -75,8 +75,10 @@ DOCUMENT_CHAGE_EVENT = threading.Event()
 class GotoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
     def run(self, edit: sublime.Edit, changes: List[dict]):
         text_changes = [self.to_text_change(c) for c in changes]
+        current_sel = list(self.view.sel())
         try:
             self.apply(edit, text_changes)
+            self.relocate_selection(current_sel, text_changes)
         finally:
             DOCUMENT_CHAGE_EVENT.set()
 
@@ -100,6 +102,26 @@ class GotoolsApplyTextChangesCommand(sublime_plugin.TextCommand):
             self.view.erase(edit, replaced_region)
             self.view.insert(edit, replaced_region.a, change.new_text)
             cursor_move += change.cursor_move
+
+    def relocate_selection(
+        self, selections: List[sublime.Region], changes: List[TextChange]
+    ):
+        """relocate current selection following text changes"""
+        moved_selections = []
+        for selection in selections:
+            temp_selection = selection
+            for change in changes:
+                if temp_selection.begin() > change.region.begin():
+                    temp_selection.a += change.cursor_move
+                    temp_selection.b += change.cursor_move
+
+            moved_selections.append(temp_selection)
+
+        # we must clear current selection
+        self.view.sel().clear()
+        self.view.sel().add_all(moved_selections)
+
+        self.view.show(moved_selections[0])
 
 
 class UnbufferedDocument:
