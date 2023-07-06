@@ -148,7 +148,7 @@ class UnbufferedDocument:
             except KeyError as err:
                 raise Exception(f"invalid params {err}") from err
 
-            lines = self.text.splitlines(keepends=True)
+            lines = self.text.split("\n")
             temp_lines = []
 
             # pre change line
@@ -161,7 +161,7 @@ class UnbufferedDocument:
             # post change line
             temp_lines.extend(lines[end_line + 1 :])
 
-            self.text = "".join(temp_lines)
+            self.text = "\n".join(temp_lines)
 
     def save(self):
         self._path.write_text(self.text)
