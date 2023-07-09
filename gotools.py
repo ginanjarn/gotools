@@ -189,10 +189,6 @@ class BufferedDocument:
 
         return self.view.substr(sublime.Region(0, self.view.size()))
 
-    def new_version(self) -> int:
-        self.version += 1
-        return self.version
-
     def document_uri(self) -> api.URI:
         return api.path_to_uri(self.file_name)
 
@@ -484,13 +480,20 @@ class GoplsHandler(api.BaseHandler):
     @wait_initialized
     def textdocument_didchange(self, file_name: str, changes: List[dict]):
         if document := self.working_documents.get(file_name):
+
+            change_version = document.view.change_count()
+            if change_version <= document.version:
+                return
+
+            document.version = change_version
+
             self.client.send_notification(
                 "textDocument/didChange",
                 {
                     "contentChanges": changes,
                     "textDocument": {
                         "uri": document.document_uri(),
-                        "version": document.new_version(),
+                        "version": document.version,
                     },
                 },
             )
