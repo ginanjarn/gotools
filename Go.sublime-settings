@@ -1,0 +1,12 @@
+// These settings override both User and Default settings for the Python syntax
+{
+	// The number of spaces a tab is considered equal to
+	"tab_size": 4,
+
+	// Set to true to insert spaces when tab is pressed
+	"translate_tabs_to_spaces": false,
+
+	// File indexing parses all files in the sidebar, and builds an index of
+	// their symbols. This is required for Goto Definition to work.
+	"index_files": false,
+}
