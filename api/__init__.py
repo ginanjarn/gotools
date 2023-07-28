@@ -7,7 +7,6 @@ import re
 import threading
 import subprocess
 import shlex
-import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
@@ -296,7 +295,7 @@ class StandardIO(Transport):
 
 class Client:
     def __init__(self, transport: Transport, handler: BaseHandler):
-        self._transport = weakref.ref(transport)
+        self.transport = transport
         self.handler = handler
 
         self._request_map_lock = threading.Lock()
@@ -310,10 +309,6 @@ class Client:
             self._request_map = {}
             self._canceled_requests = set()
             self._temp_request_id = -1
-
-    @property
-    def transport(self) -> Transport:
-        return self._transport()
 
     def new_request_id(self) -> int:
         self._temp_request_id += 1

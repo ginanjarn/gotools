@@ -337,8 +337,8 @@ class GoplsHandler(api.BaseHandler):
         if LOGGER.level == logging.DEBUG:
             server_command.append("-veryverbose")
 
-        self._transport = api.StandardIO(server_command)
-        self.client = api.Client(self._transport, self)
+        transport = api.StandardIO(server_command)
+        self.client = api.Client(transport, self)
 
         # workspace status
         self.working_documents: dict[str, BufferedDocument] = {}
