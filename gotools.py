@@ -809,6 +809,10 @@ def get_workspace_path(view: sublime.View) -> str:
 
 
 class ViewEventListener(sublime_plugin.ViewEventListener):
+    def __init__(self, view: sublime.View):
+        super().__init__(view)
+        self.prev_file_name = None
+
     def on_hover(self, point: int, hover_zone: HoverZone):
         # check point in valid source
         if not (valid_context(self.view, point) and hover_zone == sublime.HOVER_TEXT):
@@ -897,6 +901,13 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
         file_name = self.view.file_name()
         if HANDLER.ready():
             HANDLER.textdocument_didopen(file_name)
+
+            # Close older document if renamed.
+            # SublimeText only rename the 'file_name' but 'View' didn't closed.
+            if (prev_name := self.prev_file_name) and prev_name != file_name:
+                HANDLER.textdocument_didclose(prev_name)
+
+            self.prev_file_name = file_name
 
         else:
             if LOGGER.level == logging.DEBUG:
