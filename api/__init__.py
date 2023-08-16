@@ -180,7 +180,6 @@ class StandardIO(Transport):
         return bool(self._process) and (self._process.poll() is None)
 
     def run(self, options: PopenOptions = None):
-
         options = options or PopenOptions()
         print("execute '%s'" % shlex.join(self.command))
 
