@@ -837,6 +837,11 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
             else:
                 # initialize server
                 HANDLER.run_server()
+
+                # in some case, view is closed while exec 'run_server()'
+                if not view:
+                    return
+
                 HANDLER.initialize(get_workspace_path(view))
                 HANDLER.textdocument_didopen(file_name)
                 HANDLER.textdocument_hover(file_name, row, col)
@@ -916,6 +921,11 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
             try:
                 # initialize server
                 HANDLER.run_server()
+
+                # in some case, view is closed while exec 'run_server()'
+                if not self.view:
+                    return
+
                 HANDLER.initialize(get_workspace_path(self.view))
                 HANDLER.textdocument_didopen(file_name)
 
