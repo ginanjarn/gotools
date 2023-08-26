@@ -1015,27 +1015,35 @@ class GotoolsCodeActionCommand(sublime_plugin.TextCommand):
 
 
 class GotoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
-    def run(self, edit: sublime.Edit):
+    def run(self, edit: sublime.Edit, event: Optional[dict] = None):
         file_name = self.view.file_name()
         cursor = self.view.sel()[0]
+        point = event["text_point"] if event else cursor.a
         if HANDLER.ready():
-            start_row, start_col = self.view.rowcol(cursor.a)
+            start_row, start_col = self.view.rowcol(point)
             HANDLER.textdocument_definition(file_name, start_row, start_col)
 
     def is_visible(self):
         return valid_context(self.view, 0)
 
+    def want_event(self):
+        return True
+
 
 class GotoolsRenameCommand(sublime_plugin.TextCommand):
-    def run(self, edit: sublime.Edit):
+    def run(self, edit: sublime.Edit, event: Optional[dict] = None):
         file_name = self.view.file_name()
         cursor = self.view.sel()[0]
+        point = event["text_point"] if event else cursor.a
         if HANDLER.ready():
-            start_row, start_col = self.view.rowcol(cursor.a)
+            start_row, start_col = self.view.rowcol(point)
             HANDLER.textdocument_preparerename(file_name, start_row, start_col)
 
     def is_visible(self):
         return valid_context(self.view, 0)
+
+    def want_event(self):
+        return True
 
 
 class GotoolsTerminateCommand(sublime_plugin.WindowCommand):
