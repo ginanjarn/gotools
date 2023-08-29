@@ -682,6 +682,7 @@ class GoplsHandler(api.BaseHandler):
     def _open_locations(self, locations: List[dict]):
         current_view = self.definition_target.view
         current_sel = tuple(current_view.sel())
+        visible_region = current_view.visible_region()
 
         def build_location(location: dict):
             file_name = api.uri_to_path(location["uri"])
@@ -696,7 +697,7 @@ class GoplsHandler(api.BaseHandler):
                 self.active_window().focus_view(current_view)
                 current_view.sel().clear()
                 current_view.sel().add_all(current_sel)
-                current_view.show(current_sel[0])
+                current_view.show(visible_region, show_surrounds=False)
 
             else:
                 flags = sublime.ENCODED_POSITION
