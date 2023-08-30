@@ -309,6 +309,11 @@ class DiagnosticPanel:
         if not self.panel:
             self._create_panel()
 
+        # recreate panel if assigned window has closed
+        if not self.panel.is_valid():
+            self.window = sublime.active_window()
+            self._create_panel()
+
         # clear content
         self.panel.run_command("select_all")
         self.panel.run_command("left_delete")
