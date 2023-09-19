@@ -870,12 +870,15 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
             return
 
         if (document := HANDLER.completion_target) and document.completion_ready():
-            show = False
             word = self.view.word(self.prev_completion_loc)
+            # point unchanged
             if point == self.prev_completion_loc:
                 show = True
+            # point changed but still in same word
             elif self.view.substr(word).isidentifier() and point in word:
                 show = True
+            else:
+                show = False
 
             if (cache := document.cached_completion) and show:
                 LOGGER.debug("show auto_complete")
