@@ -393,6 +393,10 @@ class GoplsHandler(api.BaseHandler):
         with self.run_server_lock:
             if not self.client.server_running():
                 sublime.status_message("running gopls...")
+                # sometimes the server stop working
+                # we must reset the state before run server
+                self._reset_state()
+
                 self.client.run_server()
                 self.client.listen()
 
