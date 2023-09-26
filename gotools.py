@@ -203,8 +203,6 @@ class BufferedDocument:
         self.view.run_command("markdown_popup", {"text": text, "point": point})
 
     def show_completion(self, items: List[dict]):
-        items = sorted(items, key=lambda item: item["sortText"])
-
         def convert_kind(kind_num: int):
             return COMPLETION_KIND_MAP[kind_num]
 
@@ -887,8 +885,7 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
             if (cache := document.cached_completion) and show:
                 LOGGER.debug("show auto_complete")
                 return sublime.CompletionList(
-                    cache,
-                    flags=sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_REORDER,
+                    cache, flags=sublime.INHIBIT_WORD_COMPLETIONS
                 )
 
             LOGGER.debug("hide auto_complete")
