@@ -983,6 +983,10 @@ class ViewEventListener(sublime_plugin.ViewEventListener):
 
 class TextChangeListener(sublime_plugin.TextChangeListener):
     def on_text_changed(self, changes: List[sublime.TextChange]):
+        # check point in valid source
+        if not valid_context(self.buffer.primary_view(), 0):
+            return
+
         if (file_name := self.buffer.file_name()) and HANDLER.ready():
             HANDLER.textdocument_didchange(
                 file_name, [self.change_as_rpc(c) for c in changes]
