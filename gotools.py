@@ -344,6 +344,7 @@ class GoplsHandler(api.BaseHandler):
 
         # workspace status
         self.working_documents: dict[str, BufferedDocument] = {}
+        self._initializing = False
         self._initialized = False
         self.diagnostics_map = {}
 
@@ -358,6 +359,7 @@ class GoplsHandler(api.BaseHandler):
 
     def _reset_state(self):
         self.working_documents = {}
+        self._initializing = False
         self._initialized = False
         self.diagnostics_map = {}
 
@@ -408,6 +410,11 @@ class GoplsHandler(api.BaseHandler):
         return sublime.active_window()
 
     def initialize(self, workspace_path: str):
+        # cancel if intializing
+        if self._initializing:
+            return
+
+        self._initializing = True
         self.client.send_request(
             "initialize",
             {
@@ -435,6 +442,7 @@ class GoplsHandler(api.BaseHandler):
             return
 
         self.client.send_notification("initialized", {})
+        self._initializing = False
         self._initialized = True
         self.initialized_event.set()
 
